@@ -204,7 +204,13 @@ class MacInjector:
         vk = effective_vk(event)
         ctrl = any(source[0] in (0xA2,0xA3) and target in (("key",59),("key",62))
                    for source,target in self._held_sources.items())
-        shift = self._flags() & self.q.kCGEventFlagMaskShift
+        flags = self._flags()
+        shift = flags & self.q.kCGEventFlagMaskShift
+        q = self.q
+        chords = flags & (q.kCGEventFlagMaskAlternate | q.kCGEventFlagMaskCommand
+                          | q.kCGEventFlagMaskSecondaryFn)
+        if chords:
+            return None
         if self.windows_home_end and vk in (0x24,0x23):
             key = (126 if vk==0x24 else 125) if ctrl else (123 if vk==0x24 else 124)
             flags = shift | self.q.kCGEventFlagMaskCommand
