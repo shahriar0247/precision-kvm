@@ -53,7 +53,6 @@ class WindowsCapture:
         self._thread_id = 0
         self._keys: set[int] = set()
         self._buttons: set[str] = set()
-        self._cooldown = 0.0
         self._anchor = (0, 0)
         self._entry_y = 0.5
         self._entry_x = 0.5
@@ -100,9 +99,8 @@ class WindowsCapture:
         self.gestures.reset()
         if self.touchpads:
             self.touchpads.reset()
-        self._cooldown = time.monotonic() + 0.6
         if was_active:
-            # Place inside the entry edge, preventing immediate re-entry.
+            # Place inside the entry edge; a fresh edge touch re-arms instantly.
             x, y = self._return_point()
             ctypes.windll.user32.SetCursorPos(x, y)
             try:
@@ -205,8 +203,7 @@ class WindowsCapture:
                     x, y = data.pt.x, data.pt.y
                     if not self.active:
                         if (not self._stopping.is_set() and self._at_edge(x, y)
-                                and not self._keys and not self._buttons
-                                and time.monotonic() >= self._cooldown):
+                                and not self._keys and not self._buttons):
                             self._entry_x = x / max(1, self._size[0] - 1)
                             self._entry_y = y / max(1, self._size[1] - 1)
                             self.active = True
