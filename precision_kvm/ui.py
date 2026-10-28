@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import queue
+import logging
 import threading
 import tkinter as tk
 from tkinter import ttk
@@ -107,7 +108,7 @@ class ControlPanel:
                 raise ValueError("Enter a Mac address and sensitivity from 0.1 to 5.0")
             save_json(state_dir() / "settings.json", settings)
             self.settings = settings
-            self.session = HostSession(settings, self.messages.put)
+            self.session = HostSession(settings, self.report_status)
             self.session.start()
             if settings["ssh_target"]:
                 threading.Thread(target=self.session.connect_mac, daemon=True, name="kvm-ssh").start()
@@ -125,6 +126,10 @@ class ControlPanel:
         for control in self.controls:
             control.state(["!disabled"])
         self.status.set("Stopped • local input active")
+
+    def report_status(self, message):
+        logging.info(message)
+        self.messages.put(message)
 
     def poll(self):
         while not self.messages.empty():
@@ -145,7 +150,11 @@ class ControlPanel:
         self.root.destroy()
 
 
-def run_ui():
+def run_ui(start=False):
+    logging.basicConfig(filename=str(state_dir() / "host.log"), level=logging.INFO,
+                        format="%(asctime)s %(message)s")
     root = tk.Tk()
-    ControlPanel(root)
+    panel = ControlPanel(root)
+    if start:
+        root.after(500, panel.start)
     root.mainloop()

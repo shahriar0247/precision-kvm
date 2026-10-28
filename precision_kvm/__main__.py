@@ -9,7 +9,8 @@ import sys
 def main():
     parser = argparse.ArgumentParser(description="PrecisionKVM encrypted input sharing")
     commands = parser.add_subparsers(dest="command")
-    commands.add_parser("gui", help="Open Windows control panel")
+    gui = commands.add_parser("gui", help="Open Windows control panel")
+    gui.add_argument("--start", action="store_true", help="Start sharing and connect the prepared Mac")
     client = commands.add_parser("client", help="Run paired macOS client (posts input)")
     client.add_argument("--config", type=Path, required=True)
     commands.add_parser("identity", help="Create local pairing identity, print public fingerprint only")
@@ -17,7 +18,7 @@ def main():
     args = parser.parse_args()
     if args.command in (None, "gui"):
         from .ui import run_ui
-        run_ui()
+        run_ui(start=getattr(args, "start", False))
     elif args.command == "client":
         from .session import run_client
         try:
