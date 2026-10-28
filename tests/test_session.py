@@ -4,7 +4,7 @@ import socket
 import ssl
 
 from precision_kvm.config import load_settings
-from precision_kvm.session import HostSession, run_client
+from precision_kvm.session import HostSession, run_client, run_client_forever
 from precision_kvm.transport import BackpressureError
 
 
@@ -85,3 +85,23 @@ def test_stop_before_ssh_launch_prevents_process_creation():
     with patch("precision_kvm.session.subprocess.Popen") as launch:
         session.connect_mac()
         launch.assert_not_called()
+
+
+def test_reconnect_retries_every_second_and_stops_cleanly():
+    stop = Mock()
+    stop.is_set.return_value = False
+    stop.wait.side_effect = [False, True]
+    with patch("precision_kvm.session.run_client", side_effect=ConnectionRefusedError) as connect, \
+         patch("precision_kvm.session.time.monotonic", side_effect=[10, 10.2, 11, 11.4]):
+        run_client_forever({}, stop, lambda message: None)
+    assert connect.call_count == 2
+    assert abs(stop.wait.call_args_list[0].args[0] - 0.8) < 0.001
+    assert abs(stop.wait.call_args_list[1].args[0] - 0.6) < 0.001
+    connect.assert_called_with({}, connect_timeout=0.8)
+
+
+def test_reconnect_does_not_hide_permission_errors():
+    import pytest
+    with patch("precision_kvm.session.run_client", side_effect=RuntimeError("Accessibility required")):
+        with pytest.raises(RuntimeError, match="Accessibility"):
+            run_client_forever({})

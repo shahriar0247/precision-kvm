@@ -38,6 +38,8 @@ cd ~/Applications/PrecisionKVM
 .venv/bin/python -m precision_kvm client --config ~/.config/PrecisionKVM/client.json
 ```
 
+The Mac client reconnects automatically after disconnects, attempting a new connection every second while the server is unavailable. Each failed TCP/TLS connection attempt has a 0.8-second connection timeout; retries do not overlap. Permission/configuration errors remain visible rather than looping silently. Only one client process runs per Mac user. `Start-Client.command` opens the client in Terminal for visible connection status; Ctrl+C stops it. Stop the Mac client too if you want to prevent it reconnecting when the Windows host starts again.
+
 The Windows IP and Mac pairing configuration must be refreshed if the host address changes. The control panel's Mac address is used for local settings; SSH target determines which prepared Mac is launched. Client diagnostic output is saved in the Windows state directory as `mac-client.log`.
 
 ## Performance design

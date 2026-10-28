@@ -9,7 +9,8 @@ import time
 from typing import Callable, TYPE_CHECKING
 
 from .config import identity, state_dir
-from .transport import EventBuffer, FramedSocket, Receiver, Sender, TLSListener, authenticate
+from .transport import (BackpressureError, EventBuffer, FramedSocket, ProtocolError,
+                        Receiver, Sender, TLSListener, authenticate)
 
 if TYPE_CHECKING:
     from .windows import WindowsCapture
@@ -81,7 +82,7 @@ class HostSession:
                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                     self.remote_process = process
             process.wait()
-            if not self.stopped.is_set():
+            if not self.stopped.is_set() and process.returncode != 0:
                 self.status("Mac client exited; see the local mac-client.log, then stop and reconnect")
         except Exception as exc:
             self.status(f"Cannot start Mac client: {exc}")
@@ -180,7 +181,20 @@ class HostSession:
             self.rtt_ms = float(event["ms"])
 
 
-def run_client(config: dict):
+def run_client_forever(config: dict, stop_event=None, status=print):
+    """Retry on a one-second start-to-start cadence without overlapping attempts."""
+    stop_event = stop_event if stop_event is not None else threading.Event()
+    while not stop_event.is_set():
+        started = time.monotonic()
+        try:
+            run_client(config, connect_timeout=0.8)
+        except (OSError, EOFError, ProtocolError, BackpressureError) as exc:
+            status(f"Server unavailable / disconnected ({type(exc).__name__}); retrying every second")
+        if stop_event.wait(max(0.0, 1.0 - (time.monotonic() - started))):
+            break
+
+
+def run_client(config: dict, connect_timeout=3):
     from .mac import MacInjector
     from .transport import connect_tls
 
@@ -192,8 +206,10 @@ def run_client(config: dict):
     injector = MacInjector(on_return=buffer.put)
     channel = None
     sender = None
+    workers = []
     try:
-        channel = connect_tls(config["host"], int(config["port"]), config["fingerprint"])
+        channel = connect_tls(config["host"], int(config["port"]), config["fingerprint"],
+                              timeout=connect_timeout)
         authenticate(channel, config["token"], server=False)
         channel.send({"type": "client_ready", "version": 1})
         sender = Sender(channel, buffer)
@@ -217,9 +233,11 @@ def run_client(config: dict):
             else:
                 injector.handle(event)
 
-        threading.Thread(target=write, daemon=True).start()
-        threading.Thread(target=heartbeat, daemon=True).start()
-        print("Connected. Ctrl+Alt+F12 on Windows returns control immediately.")
+        for target in (write, heartbeat):
+            worker = threading.Thread(target=target, daemon=True)
+            worker.start()
+            workers.append(worker)
+        print("Connected. Ctrl+Alt+F12 on Windows returns control immediately.", flush=True)
         Receiver(channel, receive, injector.release_all).run()
     finally:
         stopped.set()
@@ -228,3 +246,6 @@ def run_client(config: dict):
             sender.stop()
         elif channel:
             channel.close()
+        buffer.close()
+        for worker in workers:
+            worker.join(3)

@@ -20,9 +20,21 @@ def main():
         from .ui import run_ui
         run_ui(start=getattr(args, "start", False))
     elif args.command == "client":
-        from .session import run_client
+        if sys.platform != "darwin":
+            parser.error("The input client requires macOS")
+        from .session import run_client_forever
         try:
-            run_client(json.loads(args.config.read_text()))
+            # macOS client singleton also prevents the host's SSH launch from
+            # competing with an already-running reconnecting client.
+            import fcntl
+            from .config import state_dir
+            with (state_dir() / "client.lock").open("a") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    print("PrecisionKVM client is already running.", flush=True)
+                    return
+                run_client_forever(json.loads(args.config.read_text()))
         except KeyboardInterrupt:
             pass
         except Exception as exc:
