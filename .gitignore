@@ -15,3 +15,6 @@ pairing.json
 settings.json
 .env*
 reports/local-*
+client.json
+*pairing*.json
+artifacts/

@@ -128,6 +128,103 @@ class MappingTests(unittest.TestCase):
         self.injector.release_all()
         self.assertEqual(self.q.events[-1]["flags"],0)
 
+    def test_many_to_one_remap_releases_only_last_source(self):
+        self.injector.handle({"type":"activate","keymap":{"A":"B","C":"B"}})
+        for vk in (65,67):
+            self.injector.handle({"type":"key","vk":vk,"down":True})
+        count = len(self.q.events)
+        self.injector.handle({"type":"key","vk":65,"down":False})
+        self.assertEqual(len(self.q.events),count)
+        self.assertIn(11,self.injector.keys)
+        self.injector.handle({"type":"key","vk":67,"down":False})
+        self.assertEqual(self.q.events[-1]["code"],11)
+        self.assertFalse(self.q.events[-1]["down"])
+        self.assertFalse(self.injector.keys)
+
+    def test_mapping_release_retains_press_destination_and_blocked_key(self):
+        self.injector.handle({"type":"activate","keymap":{"A":"Command","B":"Disabled"}})
+        self.injector.handle({"type":"key","vk":65,"down":True})
+        self.injector.mapper.mapping["0x41"] = "Control"
+        self.injector.handle({"type":"key","vk":65,"down":False})
+        self.assertEqual(self.q.events[-1]["code"],55)
+        count = len(self.q.events)
+        self.injector.handle({"type":"key","vk":66,"down":True})
+        self.injector.handle({"type":"key","vk":66,"down":False})
+        self.assertEqual(len(self.q.events),count)
+
+    def test_independent_scroll_axes_inversion_and_line_mode(self):
+        self.injector.handle({"type":"activate","scroll_gain_x":2,"scroll_gain_y":0.5,
+                              "scroll_invert_y":True,"scroll_mode":"line"})
+        self.injector.handle({"type":"scroll","dx":120,"dy":120})
+        self.assertEqual(self.q.events[-1]["wheel"],(-1,-6))
+        self.injector.handle({"type":"scroll","dy":120})
+        self.assertEqual(self.q.events[-1]["wheel"],(-2,0))
+
+    def test_gesture_keeps_held_modifiers_and_releases_only_temporary_key(self):
+        self.activate()
+        self.injector.handle({"type":"key","vk":0x5B,"down":True})
+        before = self.injector.keys.copy()
+        self.injector.handle({"type":"gesture","action":"desktop_left"})
+        self.assertEqual(self.injector.keys,before)
+        self.assertEqual(self.q.events[-2]["code"],123)
+        self.assertTrue(self.q.events[-2]["down"])
+        self.assertFalse(self.q.events[-1]["down"])
+        self.assertEqual(self.q.events[-1]["flags"],self.q.kCGEventFlagMaskControl)
+        self.injector.release_all()
+        self.assertFalse(self.injector._held_sources)
+
+    def test_remapped_fn_has_native_modifier_flag(self):
+        self.injector.handle({"type":"activate","keymap":{"A":"Fn"}})
+        self.injector.handle({"type":"key","vk":65,"down":True})
+        self.injector.handle({"type":"key","vk":66,"down":True})
+        self.assertEqual(self.q.events[-1]["flags"],self.q.kCGEventFlagMaskSecondaryFn)
+        self.injector.release_all()
+        self.assertEqual(self.q.events[-1]["flags"],0)
+
+    def test_windows_home_end_and_shift_selection(self):
+        self.injector.handle({"type":"activate","windows_home_end":True})
+        self.injector.handle({"type":"key","vk":0xA0,"down":True})
+        self.injector.handle({"type":"key","vk":0x24,"down":True})
+        self.assertEqual(self.q.events[-1]["code"],123)
+        self.assertEqual(self.q.events[-1]["flags"],
+                         self.q.kCGEventFlagMaskCommand | self.q.kCGEventFlagMaskShift)
+        self.injector.handle({"type":"key","vk":0x24,"down":False})
+        self.assertFalse(self.q.events[-1]["down"])
+        self.injector.release_all()
+
+    def test_windows_word_navigation_release_and_custom_mapping_priority(self):
+        self.injector.handle({"type":"activate","windows_word_nav":True,
+                              "keymap":{"Backspace":"Delete"}})
+        self.injector.handle({"type":"key","vk":0xA2,"down":True})
+        self.injector.handle({"type":"key","vk":0x25,"down":True})
+        self.assertEqual(self.q.events[-1]["flags"],self.q.kCGEventFlagMaskAlternate)
+        self.injector.handle({"type":"key","vk":0xA2,"down":False})
+        self.injector.handle({"type":"key","vk":0x25,"down":False})
+        self.assertEqual(self.q.events[-1]["code"],123)
+        self.assertEqual(self.q.events[-1]["flags"],self.q.kCGEventFlagMaskAlternate)
+        self.injector.handle({"type":"key","vk":0xA2,"down":True})
+        self.injector.handle({"type":"key","vk":0x08,"down":True})
+        self.assertEqual(self.q.events[-1]["code"],117)
+        self.assertEqual(self.q.events[-1]["flags"],self.q.kCGEventFlagMaskControl)
+        self.injector.close()
+        self.assertFalse(self.injector._target_counts)
+
+    def test_smooth_scroll_is_tagged_and_cancelled_on_deactivate(self):
+        from unittest.mock import patch
+        self.injector.handle({"type":"activate","smooth_scroll":True})
+        with patch("precision_kvm.scroll.SmoothScrollEngine") as engine:
+            self.injector.handle({"type":"scroll","dy":120})
+            engine.return_value.add.assert_called_once_with(0.0,30.0)
+            self.injector._scroll_step(0,2)
+            self.assertEqual(self.q.events[-1][self.q.kCGEventSourceUserData],0x50524B56)
+            self.injector.release_all()
+            engine.return_value.cancel.assert_called_once()
+            count = len(self.q.events)
+            self.injector._scroll_step(0,10)
+            self.assertEqual(len(self.q.events),count)
+            self.injector.close()
+            engine.return_value.stop.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

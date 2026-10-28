@@ -1,0 +1,151 @@
+name: Native release bundles
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the verified artifacts as a GitHub release
+        type: boolean
+        default: false
+      tag:
+        description: Existing version tag to publish (for example v0.2.0)
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            architecture: x64
+            python: '3.11'
+            target: windows-x64
+          - runner: windows-11-arm
+            architecture: arm64
+            python: '3.13'
+            target: windows-arm64
+          - runner: macos-15
+            architecture: arm64
+            python: '3.11'
+            target: macos-arm64
+          - runner: macos-15-intel
+            architecture: x64
+            python: '3.11'
+            target: macos-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && inputs.tag || github.ref }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: ${{ matrix.architecture }}
+      - name: Install native dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            python -m pip install '.[mac,dev]' 'pyinstaller>=6.22.3,<7'
+          else
+            python -m pip install '.[dev]' 'pyinstaller>=6.22.3,<7'
+          fi
+      - name: Verify source without capturing input
+        run: |
+          python -m ruff check precision_kvm tests tools packaging/*.py
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            python -m compileall -q precision_kvm
+            python -m pytest -q --ignore=tests/test_settings_ui.py
+          else
+            python -m mypy precision_kvm
+            python -m pytest -q
+          fi
+      - name: Build native portable archive
+        run: python tools/build_release.py
+      - name: Import CLI from the frozen bundle without launching sharing
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            dist/PrecisionKVM.app/Contents/MacOS/PrecisionKVM --help
+          else
+            dist/PrecisionKVM/PrecisionKVM.exe --help
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.target }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && inputs.tag || github.ref }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.11'
+      - run: python -m pip install build
+      - run: python -m build
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: python-source
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [native, source]
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && inputs.tag || github.ref }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Validate release tag and package version
+        run: |
+          python - <<'PY'
+          import os, re, subprocess, tomllib
+          from pathlib import Path
+          tag = os.environ['RELEASE_TAG']
+          version = tomllib.loads(Path('pyproject.toml').read_text())['project']['version']
+          if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', tag) or tag != 'v' + version:
+              raise SystemExit('Release tag must match the stable package version')
+          subprocess.run(['gh', 'api', 'repos/' + os.environ['GH_REPO'] + '/git/ref/tags/' + tag],
+                         stdout=subprocess.DEVNULL, check=True)
+          PY
+      - name: Write aggregate SHA256 checksums
+        working-directory: artifacts
+        run: sha256sum *.zip *.whl *.tar.gz > SHA256SUMS.txt
+      - name: Create release with native and source downloads
+        run: |
+          gh release create "$RELEASE_TAG" artifacts/* --verify-tag --generate-notes \
+            --title "PrecisionKVM $RELEASE_TAG" \
+            --notes-file docs/release-notes.md

@@ -97,7 +97,8 @@ def test_reconnect_retries_every_second_and_stops_cleanly():
     assert connect.call_count == 2
     assert abs(stop.wait.call_args_list[0].args[0] - 0.8) < 0.001
     assert abs(stop.wait.call_args_list[1].args[0] - 0.6) < 0.001
-    connect.assert_called_with({}, connect_timeout=0.8)
+    assert connect.call_args.kwargs["stop_event"] is stop
+    assert connect.call_args.kwargs["connect_timeout"] == 0.8
 
 
 def test_reconnect_does_not_hide_permission_errors():

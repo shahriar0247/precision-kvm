@@ -1,0 +1,91 @@
+{
+  "synthetic_clipboard_bytes": 33554432,
+  "native_clipboard_accessed": false,
+  "hardware_input_posted": false,
+  "bulk_seconds": 1.937,
+  "bulk_checksum_verified": true,
+  "concurrent_input": {
+    "kind": "input-free TLS transport probe",
+    "hardware_latency_measured": false,
+    "results": [
+      {
+        "requested_hz": 1000,
+        "actual_send_hz": 998.73,
+        "seconds": 6.001,
+        "sent": 5993,
+        "echoed": 5993,
+        "unanswered": 0,
+        "peak_in_flight": 13,
+        "queue_high_water": 1,
+        "max_queue_ms": 2.384,
+        "rtt_ms": {
+          "p50": 0.898,
+          "p95": 1.334,
+          "p99": 2.033,
+          "max": 12.242
+        },
+        "send_interval_ms": {
+          "p50": 1.025,
+          "p95": 1.209,
+          "p99": 1.43,
+          "max": 2.449
+        },
+        "send_call_ms": {
+          "p50": 0.054,
+          "p95": 0.094,
+          "p99": 0.145,
+          "max": 0.385
+        },
+        "tail_samples": [
+          {
+            "sequence": 284,
+            "offset_ms": 284.28,
+            "rtt_ms": 12.242,
+            "send_call_ms": 0.05,
+            "send_gap_ms": 1.092,
+            "receive_gap_ms": 8.053,
+            "echo_processing_ms": 7.727
+          },
+          {
+            "sequence": 285,
+            "offset_ms": 285.355,
+            "rtt_ms": 11.198,
+            "send_call_ms": 0.045,
+            "send_gap_ms": 1.075,
+            "receive_gap_ms": 0.031,
+            "echo_processing_ms": 0.002
+          },
+          {
+            "sequence": 286,
+            "offset_ms": 286.425,
+            "rtt_ms": 10.147,
+            "send_call_ms": 0.069,
+            "send_gap_ms": 1.07,
+            "receive_gap_ms": 0.02,
+            "echo_processing_ms": 0.001
+          },
+          {
+            "sequence": 287,
+            "offset_ms": 287.514,
+            "rtt_ms": 9.076,
+            "send_call_ms": 0.042,
+            "send_gap_ms": 1.089,
+            "receive_gap_ms": 0.017,
+            "echo_processing_ms": 0.001
+          },
+          {
+            "sequence": 2708,
+            "offset_ms": 2712.942,
+            "rtt_ms": 8.347,
+            "send_call_ms": 0.041,
+            "send_gap_ms": 1.003,
+            "receive_gap_ms": 8.498,
+            "echo_processing_ms": 0.002
+          }
+        ]
+      }
+    ],
+    "errors": [],
+    "windows_1ms_timer_active": true
+  }
+}

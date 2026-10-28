@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import secrets
@@ -33,10 +34,60 @@ def load_settings() -> dict:
     path = state_dir() / "settings.json"
     settings = {"mouse_hz": 120, "side": "left", "port": 24819,
                 "peer": "10.0.0.189", "gain": 1.0, "scroll_gain": 1.0,
-                "swap_ctrl_cmd": False, "ssh_target": ""}
+                "swap_ctrl_cmd": False, "ssh_target": "", "mouse_mode": "raw",
+                "scroll_gain_x": 1.0, "scroll_gain_y": 1.0,
+                "scroll_invert_x": False, "scroll_invert_y": False, "scroll_mode": "pixel",
+                "keymap_preset": "option_cmd", "keymap": {}, "gesture_bridge": True,
+                "native_touchpad": False,
+                "clipboard_enabled": True, "clipboard_max_mb": 128,
+                "emergency_escape_seconds": 1.5, "emergency_click_count": 6,
+                "emergency_click_window": 1.2, "smooth_scroll": True,
+                "smooth_scroll_ms": 60, "smooth_scroll_hz": 120,
+                "windows_home_end": True, "windows_word_nav": True}
     if path.exists():
-        settings.update(json.loads(path.read_text(encoding="utf-8")))
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        settings.update(saved)
+        if "keymap_preset" not in saved and saved.get("swap_ctrl_cmd"):
+            settings["keymap_preset"] = "ctrl_cmd"
+        for axis in ("scroll_gain_x", "scroll_gain_y"):
+            if axis not in saved:
+                settings[axis] = saved.get("scroll_gain", 1.0)
     return settings
+
+
+def validate_settings(settings: dict) -> dict:
+    """Validate persisted/UI input before starting native hooks or services."""
+    from .keymap import normalize_keymap
+    result = dict(settings)
+    for key, low, high in (("gain", 0.1, 5), ("scroll_gain", 0.1, 5),
+                           ("scroll_gain_x", 0.1, 5), ("scroll_gain_y", 0.1, 5),
+                           ("emergency_escape_seconds", 0.5, 10),
+                           ("emergency_click_window", 0.3, 5)):
+        value = float(result[key])
+        if not math.isfinite(value) or not low <= value <= high:
+            raise ValueError(f"{key} must be between {low} and {high}")
+        result[key] = value
+    for key, low, high in (("mouse_hz", 30, 1000), ("port", 1024, 65533),
+                           ("clipboard_max_mb", 1, 512), ("emergency_click_count", 4, 20)):
+        value = int(result[key])
+        if not low <= value <= high:
+            raise ValueError(f"{key} must be between {low} and {high}")
+        result[key] = value
+    for key, allowed in (("side", ("left", "right", "top", "bottom")),
+                         ("mouse_mode", ("raw", "system")),
+                         ("scroll_mode", ("pixel", "line")),
+                         ("keymap_preset", ("native", "ctrl_cmd", "mac_layout", "option_cmd"))):
+        if result[key] not in allowed:
+            raise ValueError(f"Invalid {key}")
+    if not str(result["peer"]).strip():
+        raise ValueError("Enter the Mac address")
+    result["keymap"] = normalize_keymap(result["keymap"])
+    for key, low, high in (("smooth_scroll_ms", 10, 150), ("smooth_scroll_hz", 30, 240)):
+        value = int(result[key])
+        if not low <= value <= high:
+            raise ValueError(f"{key} must be between {low} and {high}")
+        result[key] = value
+    return result
 
 
 def identity() -> tuple[Path, Path, str, str]:

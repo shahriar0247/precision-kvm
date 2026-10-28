@@ -10,47 +10,13 @@ import sys
 import time
 import math
 import ctypes
-from typing import Callable
+import threading
+from typing import Callable, TYPE_CHECKING
 
-# Windows set-1 scan codes -> Apple virtual key codes.
-SCAN_TO_MAC = dict(zip(
-    (0x1E,0x30,0x2E,0x20,0x12,0x21,0x22,0x23,0x17,0x24,0x25,0x26,0x32,
-     0x31,0x18,0x19,0x10,0x13,0x1F,0x14,0x16,0x2F,0x11,0x2D,0x15,0x2C,
-     0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0A,0x0B,
-     0x0C,0x0D,0x1A,0x1B,0x2B,0x27,0x28,0x29,0x33,0x34,0x35),
-    (0,11,8,2,14,3,5,4,34,38,40,37,46,45,31,35,12,15,1,17,32,9,13,7,16,6,
-     18,19,20,21,23,22,26,28,25,29,27,24,33,30,42,41,39,50,43,47,44)))
-VK_TO_MAC = {
-    0x08:51,0x09:48,0x0D:36,0x1B:53,0x20:49,0x14:57,
-    0x21:116,0x22:121,0x23:119,0x24:115,0x25:123,0x26:126,
-    0x27:124,0x28:125,0x2D:114,0x2E:117,
-    0x5B:55,0x5C:54,0xA0:56,0xA1:60,0xA2:59,0xA3:62,0xA4:58,0xA5:61,
-    0x60:82,0x61:83,0x62:84,0x63:85,0x64:86,0x65:87,0x66:88,
-    0x67:89,0x68:91,0x69:92,0x6A:67,0x6B:69,0x6D:78,0x6E:65,0x6F:75,
-    0x70:122,0x71:120,0x72:99,0x73:118,0x74:96,0x75:97,
-    0x76:98,0x77:100,0x78:101,0x79:109,0x7A:103,0x7B:111,
-}
-MEDIA_KEYS = {0xAD:7,0xAE:1,0xAF:0,0xB0:17,0xB1:18,0xB2:16,0xB3:16}
+if TYPE_CHECKING:
+    from .scroll import SmoothScrollEngine
 
-
-def mac_keycode(vk: int, scan: int = 0, extended: bool = False) -> int | None:
-    """Translate special VKs first so extended navigation is unambiguous."""
-    if vk == 0x0D and extended:
-        return 76
-    if vk == 0x10:
-        return 60 if scan == 0x36 else 56
-    if vk == 0x11:
-        return 62 if extended else 59
-    if vk == 0x12:
-        return 61 if extended else 58
-    if vk in VK_TO_MAC:
-        return VK_TO_MAC[vk]
-    if scan in SCAN_TO_MAC:
-        return SCAN_TO_MAC[scan]
-    # Support synthetic producers that only provide a virtual-key code.
-    alphabet = dict(zip(range(65,91), (0,11,8,2,14,3,5,4,34,38,40,37,46,
-                                     45,31,35,12,15,1,17,32,9,13,7,16,6)))
-    return alphabet.get(vk)
+from .keymap import KeyMapper, effective_vk, mac_keycode as mac_keycode
 
 
 class MacInjector:
@@ -78,6 +44,20 @@ class MacInjector:
         self.gain = 1.0
         self.scroll_gain = 1.0
         self.swap_ctrl_cmd = False
+        self.mapper = KeyMapper()
+        self._held_sources: dict[tuple[int,int,bool], tuple[str,int] | None] = {}
+        self._target_counts: dict[tuple[str,int], int] = {}
+        self.scroll_gain_x = self.scroll_gain_y = 1.0
+        self.scroll_invert_x = self.scroll_invert_y = False
+        self.scroll_mode = "pixel"
+        self.windows_home_end = False
+        self.windows_word_nav = False
+        self.smooth_scroll = False
+        self.smooth_scroll_ms = 60.0
+        self.smooth_scroll_hz = 120
+        self._scroll_lock = threading.RLock()
+        self._scroll_flags = 0
+        self._smooth: SmoothScrollEngine | None = None
         self.keys: set[int] = set()
         self.media: set[int] = set()
         self.buttons: set[int] = set()
@@ -135,7 +115,8 @@ class MacInjector:
         for codes, flag in (((56,60),q.kCGEventFlagMaskShift),
                             ((59,62),q.kCGEventFlagMaskControl),
                             ((58,61),q.kCGEventFlagMaskAlternate),
-                            ((55,54),q.kCGEventFlagMaskCommand)):
+                            ((55,54),q.kCGEventFlagMaskCommand),
+                            ((63,),q.kCGEventFlagMaskSecondaryFn)):
             if self.keys.intersection(codes):
                 flags |= flag
         return flags
@@ -179,6 +160,109 @@ class MacInjector:
             raise RuntimeError("macOS refused a media event")
         self.q.CGEventPost(self.q.kCGHIDEventTap,event.CGEvent())
 
+    def _mapped_key(self,event):
+        source = (effective_vk(event),int(event.get("scan",0)),bool(event.get("extended",False)))
+        down = bool(event["down"])
+        if down:
+            repeat = source in self._held_sources
+            target = self._held_sources[source] if repeat else (
+                self._navigation_target(event) or self.mapper.target(event))
+            if not repeat:
+                self._held_sources[source] = target
+                if target is not None:
+                    self._target_counts[target] = self._target_counts.get(target,0)+1
+            if target is not None and (repeat or self._target_counts[target]==1):
+                self._dispatch_target(target,True,repeat)
+        else:
+            target = self._held_sources.pop(source,None)
+            if target is not None:
+                count = self._target_counts[target]-1
+                if count:
+                    self._target_counts[target] = count
+                else:
+                    self._target_counts.pop(target,None)
+                    self._dispatch_target(target,False)
+
+    def _dispatch_target(self,target,down,repeat=False):
+        kind,code = target
+        if kind == "key":
+            self._key(code,down)
+        elif kind == "media":
+            self._media(code,down)
+        else:
+            flags,key = code >> 8,code & 255
+            event = self.q.CGEventCreateKeyboardEvent(self.source,key,down)
+            if event is None:
+                raise RuntimeError("macOS refused an editing shortcut event")
+            self.q.CGEventSetFlags(event,flags)
+            self.q.CGEventSetIntegerValueField(event,self.q.kCGKeyboardEventAutorepeat,int(repeat))
+            self.q.CGEventPost(self.q.kCGHIDEventTap,event)
+
+    def _navigation_target(self,event):
+        if self.mapper.has_override(event):
+            return None
+        vk = effective_vk(event)
+        ctrl = any(source[0] in (0xA2,0xA3) and target in (("key",59),("key",62))
+                   for source,target in self._held_sources.items())
+        shift = self._flags() & self.q.kCGEventFlagMaskShift
+        if self.windows_home_end and vk in (0x24,0x23):
+            key = (126 if vk==0x24 else 125) if ctrl else (123 if vk==0x24 else 124)
+            flags = shift | self.q.kCGEventFlagMaskCommand
+        elif self.windows_word_nav and ctrl and vk in (0x25,0x27,0x08,0x2E):
+            key = {0x25:123,0x27:124,0x08:51,0x2E:117}[vk]
+            flags = shift | self.q.kCGEventFlagMaskAlternate
+        else:
+            return None
+        # Avoid releasing a destination already held by an unrelated mapped key.
+        if key in self.keys:
+            return None
+        return "shortcut",key | (flags << 8)
+
+    def _scroll_step(self,dx,dy):
+        with self._scroll_lock:
+            if not self.active:
+                return
+            self.scroll_x += dx
+            self.scroll_y += dy
+            x = math.trunc(self.scroll_x+math.copysign(1e-9,self.scroll_x))
+            y = math.trunc(self.scroll_y+math.copysign(1e-9,self.scroll_y))
+            self.scroll_x -= x
+            self.scroll_y -= y
+            if x or y:
+                q = self.q
+                unit = q.kCGScrollEventUnitPixel if self.scroll_mode=="pixel" else q.kCGScrollEventUnitLine
+                event = q.CGEventCreateScrollWheelEvent(self.source,unit,2,y,-x)
+                if event is None:
+                    raise RuntimeError("macOS refused a scroll event")
+                q.CGEventSetFlags(event,self._scroll_flags)
+                q.CGEventSetIntegerValueField(event,q.kCGEventSourceUserData,0x50524B56)
+                q.CGEventPost(q.kCGHIDEventTap,event)
+
+    def _gesture(self,action):
+        """Discrete OS shortcut equivalent, with held state preserved.
+
+        Flags are applied only to temporary events. Existing physical modifier
+        downs are not released/repressed, avoiding transient app interactions.
+        macOS shortcut preferences must retain the corresponding bindings.
+        """
+        gestures = {"desktop_left":(self.q.kCGEventFlagMaskControl,123),
+                    "desktop_right":(self.q.kCGEventFlagMaskControl,124),
+                    "mission_control":(self.q.kCGEventFlagMaskControl,126),
+                    "app_expose":(self.q.kCGEventFlagMaskControl,125),
+                    "show_desktop":(0,103)}
+        if action not in gestures:
+            return
+        flags,code = gestures[action]
+        # A physically held destination is left alone rather than releasing it.
+        if code in self.keys:
+            return
+        for down in (True,False):
+            event = self.q.CGEventCreateKeyboardEvent(self.source,code,down)
+            if event is None:
+                raise RuntimeError("macOS refused to construct a gesture shortcut")
+            self.q.CGEventSetFlags(event,flags)
+            self.q.CGEventPost(self.q.kCGHIDEventTap,event)
+
     def handle(self, event: dict):
         q = self.q
         kind = event.get("type")
@@ -194,6 +278,29 @@ class MacInjector:
             if not all(math.isfinite(v) and 0.01 <= v <= 20 for v in (self.gain,self.scroll_gain)):
                 raise ValueError("Input gains must be finite and between 0.01 and 20")
             self.swap_ctrl_cmd = bool(event.get("swap_ctrl_cmd",False))
+            self.mapper = KeyMapper(event.get("keymap",{}),event.get(
+                "keymap_preset","ctrl_cmd" if self.swap_ctrl_cmd else "native"))
+            self.scroll_gain_x = float(event.get("scroll_gain_x",self.scroll_gain))
+            self.scroll_gain_y = float(event.get("scroll_gain_y",self.scroll_gain))
+            if not all(math.isfinite(v) and 0.01 <= v <= 20
+                       for v in (self.scroll_gain_x,self.scroll_gain_y)):
+                raise ValueError("Scroll gains must be finite and between 0.01 and 20")
+            self.scroll_invert_x = bool(event.get("scroll_invert_x",False))
+            self.scroll_invert_y = bool(event.get("scroll_invert_y",False))
+            self.scroll_mode = event.get("scroll_mode","pixel")
+            if self.scroll_mode not in ("pixel","line"):
+                raise ValueError("Scroll mode must be pixel or line")
+            self.windows_home_end = bool(event.get("windows_home_end",False))
+            self.windows_word_nav = bool(event.get("windows_word_nav",False))
+            self.smooth_scroll = bool(event.get("smooth_scroll",False))
+            self.smooth_scroll_ms = float(event.get("smooth_scroll_ms",60))
+            self.smooth_scroll_hz = int(event.get("smooth_scroll_hz",120))
+            if (not math.isfinite(self.smooth_scroll_ms) or not 10 <= self.smooth_scroll_ms <= 150
+                    or not 30 <= self.smooth_scroll_hz <= 240):
+                raise ValueError("Invalid smooth scroll timing")
+            if self._smooth:
+                self._smooth.stop()
+                self._smooth = None
             axis = "normalized_x" if self.side in ("top","bottom") else "normalized_y"
             fraction = max(0.0,min(1.0,float(event.get(axis,event.get("normalized_y",0.5)))))
             self.x = self.left + (self.width-2 if self.side == "left" else 1)
@@ -234,15 +341,9 @@ class MacInjector:
                     q.kCGEventRightMouseDragged if button==1 else q.kCGEventOtherMouseDragged)
             self._mouse(move if self.buttons else q.kCGEventMouseMoved,button,dx,dy)
         elif kind == "key":
-            vk,down = int(event["vk"]),bool(event["down"])
-            if vk in MEDIA_KEYS:
-                self._media(MEDIA_KEYS[vk],down)
-            else:
-                code = mac_keycode(vk,int(event.get("scan",0)),bool(event.get("extended",False)))
-                if code is not None:
-                    if self.swap_ctrl_cmd:
-                        code = {59:55,62:54,55:59,54:62}.get(code,code)
-                    self._key(code,down)
+            self._mapped_key(event)
+        elif kind == "gesture":
+            self._gesture(event.get("action"))
         elif kind == "button":
             button = event["button"]
             button = {"left":0,"right":1,"middle":2,"x1":3,"x2":4}.get(button,button)
@@ -264,16 +365,36 @@ class MacInjector:
             self._mouse(types[0 if down else 1],button,click_count=count)
         elif kind == "scroll":
             # Windows WHEEL_DELTA=120; preserve high-resolution partial notches.
-            self.scroll_x += float(event.get("dx",0))/120*30*self.scroll_gain
-            self.scroll_y += float(event.get("dy",0))/120*30*self.scroll_gain
-            x,y = int(self.scroll_x),int(self.scroll_y)
-            self.scroll_x -= x
-            self.scroll_y -= y
-            if x or y:
-                self._post(q.CGEventCreateScrollWheelEvent(self.source,q.kCGScrollEventUnitPixel,2,y,-x))
+            factor = 30 if self.scroll_mode=="pixel" else 3
+            dx,dy = float(event.get("dx",0)),float(event.get("dy",0))
+            if not math.isfinite(dx) or not math.isfinite(dy):
+                raise ValueError("Non-finite scroll movement")
+            dx = dx/120*factor*self.scroll_gain_x*(-1 if self.scroll_invert_x else 1)
+            dy = dy/120*factor*self.scroll_gain_y*(-1 if self.scroll_invert_y else 1)
+            flags = self._flags()
+            if flags != self._scroll_flags and self._smooth:
+                self._smooth.cancel()
+            self._scroll_flags = flags
+            if self.smooth_scroll and self.scroll_mode=="pixel":
+                if self._smooth is None:
+                    from .scroll import SmoothScrollEngine
+                    self._smooth = SmoothScrollEngine(self._scroll_step,rate_hz=self.smooth_scroll_hz,
+                                                      duration_ms=self.smooth_scroll_ms)
+                self._smooth.add(dx,dy)
+            else:
+                self._scroll_step(dx,dy)
 
     def release_all(self):
         """Release injected state even if this session is already inactive."""
+        with self._scroll_lock:
+            self.active = False
+        if self._smooth:
+            self._smooth.cancel()
+        for (kind,code),count in tuple(self._target_counts.items()):
+            if kind == "shortcut":
+                self._dispatch_target((kind,code),False)
+        self._held_sources.clear()
+        self._target_counts.clear()
         for key in tuple(self.keys):
             self._key(key,False)
         for key in tuple(self.media):
@@ -286,3 +407,9 @@ class MacInjector:
             self._mouse(kind,button)
         self.scroll_x = self.scroll_y = 0.0
         self.active = False
+
+    def close(self):
+        self.release_all()
+        if self._smooth:
+            self._smooth.stop()
+            self._smooth = None

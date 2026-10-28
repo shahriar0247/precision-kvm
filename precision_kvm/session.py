@@ -9,6 +9,7 @@ import time
 from typing import Callable, TYPE_CHECKING
 
 from .config import identity, state_dir
+from .clipboard import ClipboardClient, ClipboardServer
 from .transport import (BackpressureError, EventBuffer, FramedSocket, ProtocolError,
                         Receiver, Sender, TLSListener, authenticate)
 
@@ -31,6 +32,8 @@ class HostSession:
         self.ready = threading.Event()
         self.remote_process: subprocess.Popen | None = None
         self._remote_lock = threading.Lock()
+        self.clipboard: ClipboardServer | None = None
+        self.emergency_reason = ""
 
     def start(self):
         if self.thread and self.thread.is_alive():
@@ -43,6 +46,8 @@ class HostSession:
     def stop(self):
         self.stopped.set()
         self._disconnect()
+        if self.clipboard:
+            self.clipboard.stop()
         if self.listener:
             self.listener.close()
         if self.thread and self.thread is not threading.current_thread():
@@ -60,6 +65,12 @@ class HostSession:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=3)
+
+    def emergency_stop(self, reason):
+        """The native hook already released local input; fully stop the host."""
+        self.emergency_reason = str(reason)
+        self.stop()
+        self.status(f"Emergency STOP: {reason} • start the host to resume")
 
     def connect_mac(self):
         """Launch the prepared client through key-authenticated SSH, explicitly from UI."""
@@ -101,6 +112,11 @@ class HostSession:
                 event = dict(event, side=self.settings["side"], gain=self.settings["gain"],
                              scroll_gain=self.settings["scroll_gain"],
                              swap_ctrl_cmd=self.settings["swap_ctrl_cmd"])
+                for name in ("scroll_gain_x", "scroll_gain_y", "scroll_invert_x", "scroll_invert_y",
+                             "scroll_mode", "keymap", "keymap_preset", "smooth_scroll",
+                             "smooth_scroll_ms", "smooth_scroll_hz", "windows_home_end", "windows_word_nav"):
+                    if name in self.settings:
+                        event[name] = self.settings[name]
             if self.buffer:
                 self.buffer.put(event)
                 return True
@@ -118,6 +134,11 @@ class HostSession:
         try:
             cert, key, token, _ = identity()
             self.listener = TLSListener(str(cert), str(key), port=int(self.settings["port"]))
+            if self.settings.get("clipboard_enabled", False):
+                self.clipboard = ClipboardServer(cert, key, token, port=int(self.settings["port"]) + 2,
+                    max_bytes=int(self.settings.get("clipboard_max_mb", 128)) * 1024 * 1024,
+                    status=lambda message: self.status(f"Clipboard: {message}"))
+                self.clipboard.start()
             self.ready.set()
             self.status("Waiting for paired Mac; local input remains active")
             while not self.stopped.is_set():
@@ -139,7 +160,13 @@ class HostSession:
                         break
                     self.buffer = EventBuffer(int(self.settings["mouse_hz"]))
                     self.capture = WindowsCapture(self._emit, side=self.settings["side"],
-                                                  high_resolution_timer=True)
+                        high_resolution_timer=True, on_emergency=self.emergency_stop,
+                        mouse_mode=self.settings.get("mouse_mode", "raw"),
+                        gesture_bridge=self.settings.get("gesture_bridge", True),
+                        native_touchpad=self.settings.get("native_touchpad", False),
+                        emergency_escape_seconds=self.settings.get("emergency_escape_seconds", 1.5),
+                        emergency_click_count=self.settings.get("emergency_click_count", 6),
+                        emergency_click_window=self.settings.get("emergency_click_window", 1.2))
                     self.sender = Sender(self.channel, self.buffer)
                     writer = threading.Thread(target=self._writer, daemon=True, name="kvm-writer")
                     writer.start()
@@ -161,6 +188,8 @@ class HostSession:
                 self.status(f"Host stopped: {exc}")
         finally:
             self._disconnect()
+            if self.clipboard:
+                self.clipboard.stop()
             if self.listener:
                 self.listener.close()
 
@@ -184,17 +213,27 @@ class HostSession:
 def run_client_forever(config: dict, stop_event=None, status=print):
     """Retry on a one-second start-to-start cadence without overlapping attempts."""
     stop_event = stop_event if stop_event is not None else threading.Event()
-    while not stop_event.is_set():
-        started = time.monotonic()
-        try:
-            run_client(config, connect_timeout=0.8)
-        except (OSError, EOFError, ProtocolError, BackpressureError) as exc:
-            status(f"Server unavailable / disconnected ({type(exc).__name__}); retrying every second")
-        if stop_event.wait(max(0.0, 1.0 - (time.monotonic() - started))):
-            break
+    clipboard = None
+    try:
+        if config.get("clipboard_enabled", bool(config.get("host"))):
+            clipboard = ClipboardClient(config,
+                max_bytes=int(config.get("clipboard_max_mb", 128)) * 1024 * 1024,
+                status=lambda message: status(f"Clipboard: {message}"))
+            clipboard.start()
+        while not stop_event.is_set():
+            started = time.monotonic()
+            try:
+                run_client(config, connect_timeout=0.8, stop_event=stop_event, status=status)
+            except (OSError, EOFError, ProtocolError, BackpressureError) as exc:
+                status(f"Server unavailable / disconnected ({type(exc).__name__}); retrying every second")
+            if stop_event.wait(max(0.0, 1.0 - (time.monotonic() - started))):
+                break
+    finally:
+        if clipboard:
+            clipboard.stop()
 
 
-def run_client(config: dict, connect_timeout=3):
+def run_client(config: dict, connect_timeout=3, stop_event=None, status=print):
     from .mac import MacInjector
     from .transport import connect_tls
 
@@ -211,6 +250,8 @@ def run_client(config: dict, connect_timeout=3):
         channel = connect_tls(config["host"], int(config["port"]), config["fingerprint"],
                               timeout=connect_timeout)
         authenticate(channel, config["token"], server=False)
+        if stop_event is not None and stop_event.is_set():
+            return
         channel.send({"type": "client_ready", "version": 1})
         sender = Sender(channel, buffer)
 
@@ -231,13 +272,31 @@ def run_client(config: dict, connect_timeout=3):
             if event.get("type") == "pong":
                 buffer.put({"type": "rtt", "ms": (time.perf_counter() - event["stamp"]) * 1000})
             else:
+                if event.get("type") == "activate":
+                    tweaks = config.get("tweaks", {})
+                    allowed = ("keymap_preset", "gain", "scroll_gain_x", "scroll_gain_y",
+                               "scroll_invert_x", "scroll_invert_y", "scroll_mode",
+                               "smooth_scroll", "smooth_scroll_ms", "smooth_scroll_hz",
+                               "windows_home_end", "windows_word_nav")
+                    if isinstance(tweaks, dict):
+                        event = dict(event, **{name: tweaks[name] for name in allowed if name in tweaks})
                 injector.handle(event)
+
+        def watch_stop():
+            while not stopped.wait(0.05):
+                if stop_event.is_set():
+                    channel.close()
+                    break
 
         for target in (write, heartbeat):
             worker = threading.Thread(target=target, daemon=True)
             worker.start()
             workers.append(worker)
-        print("Connected. Ctrl+Alt+F12 on Windows returns control immediately.", flush=True)
+        if stop_event is not None:
+            worker = threading.Thread(target=watch_stop, daemon=True)
+            worker.start()
+            workers.append(worker)
+        status("Connected. Ctrl+Alt+F12 returns locally; hold Esc to stop the PC host.")
         Receiver(channel, receive, injector.release_all).run()
     finally:
         stopped.set()
@@ -249,3 +308,5 @@ def run_client(config: dict, connect_timeout=3):
         buffer.close()
         for worker in workers:
             worker.join(3)
+        if hasattr(injector, "close"):
+            injector.close()

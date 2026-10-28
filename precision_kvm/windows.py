@@ -12,6 +12,10 @@ import threading
 import time
 from typing import Any, Callable
 
+from .gestures import GestureShortcutBridge
+from .safety import EmergencyMonitor
+from .touchpad import WindowsTouchpads
+
 
 class WindowsCapture:
     """Share Windows input when crossing the configured primary-screen edge.
@@ -21,12 +25,26 @@ class WindowsCapture:
     """
 
     def __init__(self, on_event: Callable[[dict], object], side: str = "left",
-                 high_resolution_timer: bool = False):
+                 high_resolution_timer: bool = False, on_emergency=None,
+                 emergency_escape_seconds=1.5, emergency_click_count=6,
+                 emergency_click_window=1.2, mouse_mode="raw", gesture_bridge=True,
+                 native_touchpad=False):
         if side not in {"left", "right", "top", "bottom"}:
             raise ValueError("side must be left, right, top, or bottom")
         self.on_event = on_event
         self.side = side
         self.high_resolution_timer = high_resolution_timer
+        if mouse_mode not in ("raw", "system"):
+            raise ValueError("mouse_mode must be raw or system")
+        self.mouse_mode = mouse_mode
+        self.on_emergency = on_emergency or (lambda reason: None)
+        self.safety = EmergencyMonitor(emergency_escape_seconds, emergency_click_count,
+                                       emergency_click_window)
+        self.gesture_bridge = gesture_bridge
+        self.gestures = GestureShortcutBridge()
+        self.native_touchpad = bool(native_touchpad)
+        self.touchpads: WindowsTouchpads | None = None
+        self._emergency_requested = False
         self.active = False
         self.error: str | None = None
         self._thread: threading.Thread | None = None
@@ -49,6 +67,11 @@ class WindowsCapture:
         self.error = None
         self._ready.clear()
         self._stopping.clear()
+        self._emergency_requested = False
+        self.safety.reset()
+        self.gestures.reset()
+        if self.touchpads:
+            self.touchpads.reset()
         self._thread = threading.Thread(target=self._run, name="kvm-native-hooks", daemon=True)
         self._thread.start()
         if not self._ready.wait(5):
@@ -73,6 +96,10 @@ class WindowsCapture:
             self._entry_x = min(1.0, max(0.0, float(normalized_x)))
         was_active = self.active
         self.active = False
+        self.safety.reset()
+        self.gestures.reset()
+        if self.touchpads:
+            self.touchpads.reset()
         self._cooldown = time.monotonic() + 0.6
         if was_active:
             # Place inside the entry edge, preventing immediate re-entry.
@@ -84,6 +111,17 @@ class WindowsCapture:
                 self.error = str(exc)
 
     return_local = release
+
+    def _emergency_stop(self, reason):
+        if self._emergency_requested:
+            return
+        self._emergency_requested = True
+        self._stopping.set()
+        self.release()
+        # Parent stops the listener/session. Never block the hook message pump
+        # on a network shutdown, GUI operation or join from within a callback.
+        threading.Thread(target=self.on_emergency, args=(reason,), daemon=True,
+                         name="kvm-emergency-stop").start()
 
     def _return_point(self):
         width, height = self._size
@@ -177,8 +215,12 @@ class WindowsCapture:
                                 user.SetCursorPos(*self._anchor)
                                 return 1
                     else:
-                        # Relative movement is consumed through WM_INPUT, with
-                        # hardware deltas unaffected by Windows acceleration.
+                        if self.mouse_mode == "system":
+                            dx, dy = x - self._anchor[0], y - self._anchor[1]
+                            if dx or dy:
+                                self._emit({"type": "move", "dx": dx, "dy": dy})
+                        # Returning 1 leaves the local pointer at its anchor.
+                        # Raw mode obtains hardware deltas solely via WM_INPUT.
                         return 1
                 buttons = {0x0201: ("left", True), 0x0202: ("left", False),
                            0x0204: ("right", True), 0x0205: ("right", False),
@@ -190,6 +232,10 @@ class WindowsCapture:
                     button, down = buttons[message]
                     self._buttons.add(button) if down else self._buttons.discard(button)
                     if self.active:
+                        reason = self.safety.click(button, down)
+                        if reason:
+                            self._emergency_stop(reason)
+                            return 1
                         self._emit({"type": "button", "button": button, "down": down})
                         return 1
                 if self.active and message in (0x020A, 0x020E):
@@ -208,10 +254,24 @@ class WindowsCapture:
                 return next_hook(code, message, pointer)
             try:
                 data = ctypes.cast(pointer, ctypes.POINTER(Keyboard)).contents
-                if data.flags & 0x10:
-                    return next_hook(code, message, pointer)
                 down = message in (0x0100, 0x0104)
+                if data.flags & 0x10:
+                    if self.active and self.gesture_bridge:
+                        # Native contacts take precedence: the system may emit
+                        # a shortcut after the raw swipe, which must not repeat it.
+                        action = None if self.native_touchpad else self.gestures.feed(data.vk, down)
+                        if action:
+                            self._emit({"type": "gesture", "action": action})
+                        # Reserve injected input locally while sharing. Unknown
+                        # sequences are discarded, never sent to either desktop.
+                        return 1
+                    return next_hook(code, message, pointer)
                 self._keys.add(data.vk) if down else self._keys.discard(data.vk)
+                if self.active:
+                    reason = self.safety.key(data.vk, down)
+                    if reason:
+                        self._emergency_stop(reason)
+                        return 1
                 ctrl = bool(self._keys & {0x11, 0xA2, 0xA3})
                 alt = bool(self._keys & {0x12, 0xA4, 0xA5})
                 if data.vk == 0x7B and down and ctrl and alt:
@@ -273,24 +333,44 @@ class WindowsCapture:
         user.RegisterRawInputDevices.restype = wintypes.BOOL
         user.UnhookWindowsHookEx.restype = wintypes.BOOL
         timer = None
+        safety_timer = 0
         raw_buffer = ctypes.create_string_buffer(256)
         header_size = ctypes.sizeof(RawHeader)
+        if self.native_touchpad:
+            self.touchpads = WindowsTouchpads()
 
         @wndproc_t
         def window_proc(hwnd, message, wp, lp):
+            nonlocal raw_buffer
+            if message == 0x0113 and self.active:
+                reason = self.safety.tick()
+                if reason:
+                    self._emergency_stop(reason)
             if message == 0x00FF and self.active:
                 try:
                     size = wintypes.UINT(len(raw_buffer))
                     count = user.GetRawInputData(lp, 0x10000003, raw_buffer,
                                                  ctypes.byref(size), header_size)
+                    if count == 0xFFFFFFFF and len(raw_buffer) < size.value <= 128 * 1024:
+                        raw_buffer = ctypes.create_string_buffer(size.value)
+                        count = user.GetRawInputData(lp, 0x10000003, raw_buffer,
+                                                     ctypes.byref(size), header_size)
                     if count != 0xFFFFFFFF and count >= header_size + 24:
                         header = RawHeader.from_buffer(raw_buffer)
                         flags = ctypes.c_ushort.from_buffer(raw_buffer, header_size).value
-                        if header.kind == 0 and not flags & 1:
+                        if header.kind == 0 and self.mouse_mode == "raw" and not flags & 1:
                             dx = ctypes.c_long.from_buffer(raw_buffer, header_size + 12).value
                             dy = ctypes.c_long.from_buffer(raw_buffer, header_size + 16).value
                             if dx or dy:
                                 self._emit({"type": "move", "dx": dx, "dy": dy})
+                    if count != 0xFFFFFFFF and count >= header_size + 8 and self.touchpads:
+                        header = RawHeader.from_buffer(raw_buffer)
+                        if header.kind == 2:
+                            report_size = ctypes.c_uint32.from_buffer(raw_buffer, header_size).value
+                            report_count = ctypes.c_uint32.from_buffer(raw_buffer, header_size + 4).value
+                            payload = raw_buffer.raw[header_size + 8:count]
+                            for action in self.touchpads.feed(header.device, report_size, report_count, payload):
+                                self._emit({"type": "gesture", "action": action})
                 except Exception as exc:
                     self.error = str(exc)
                     self.release()
@@ -309,8 +389,18 @@ class WindowsCapture:
                                           wintypes.HWND(-3), None, module, None)
             if not window:
                 raise ctypes.WinError(ctypes.get_last_error())
-            device = RawDevice(1, 2, 0x00000100, window)  # RIDEV_INPUTSINK
-            if not user.RegisterRawInputDevices(ctypes.byref(device), 1, ctypes.sizeof(device)):
+            user.SetTimer.argtypes = [wintypes.HWND, ctypes.c_size_t, wintypes.UINT, ctypes.c_void_p]
+            user.SetTimer.restype = ctypes.c_size_t
+            user.KillTimer.argtypes = [wintypes.HWND, ctypes.c_size_t]
+            user.KillTimer.restype = wintypes.BOOL
+            safety_timer = user.SetTimer(window, 1, 50, None)
+            if not safety_timer:
+                raise ctypes.WinError(ctypes.get_last_error())
+            devices = [RawDevice(1, 2, 0x00000100, window)]  # RIDEV_INPUTSINK
+            if self.native_touchpad:
+                devices.append(RawDevice(0x0D, 0x05, 0x00000100, window))
+            registered = (RawDevice * len(devices))(*devices)
+            if not user.RegisterRawInputDevices(registered, len(devices), ctypes.sizeof(RawDevice)):
                 raise ctypes.WinError(ctypes.get_last_error())
             for kind, callback in ((14, mouse_hook), (13, keyboard_hook)):
                 handle = user.SetWindowsHookExW(kind, callback, module, 0)
@@ -343,8 +433,13 @@ class WindowsCapture:
             for handle in self._hooks:
                 user.UnhookWindowsHookEx(handle)
             if window:
+                if safety_timer:
+                    user.KillTimer(window, safety_timer)
                 device = RawDevice(1, 2, 1, None)  # RIDEV_REMOVE
                 user.RegisterRawInputDevices(ctypes.byref(device), 1, ctypes.sizeof(device))
+                if self.native_touchpad:
+                    device = RawDevice(0x0D, 0x05, 1, None)
+                    user.RegisterRawInputDevices(ctypes.byref(device), 1, ctypes.sizeof(device))
                 user.DestroyWindow(window)
             user.UnregisterClassW(class_name, kernel.GetModuleHandleW(None))
             self._hooks.clear()
