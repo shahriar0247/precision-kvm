@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+build/
+dist/
+*.egg-info/
+*.pem
+*.key
+*.p12
+*secret*
+pairing.json
+settings.json
+.env*
+reports/local-*

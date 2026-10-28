@@ -1,0 +1,15 @@
+{
+  "recorded_date_utc": "2026-10-28",
+  "direction": "Windows to Mac authenticated TLS",
+  "note": "First run after absolute deadline and native timer improvements; local scheduling stalls occurred in the first rate. Preserved without filtering.",
+  "kind": "input-free TLS transport probe",
+  "hardware_latency_measured": false,
+  "results": [
+    {"requested_hz": 120, "actual_send_hz": 79.21, "seconds": 3.005, "sent": 238, "echoed": 238, "unanswered": 0, "peak_in_flight": 3, "queue_high_water": 1, "max_queue_ms": 91.622, "rtt_ms": {"p50": 1.148, "p95": 4.586, "p99": 69.707, "max": 75.593}},
+    {"requested_hz": 240, "actual_send_hz": 237.79, "seconds": 3.003, "sent": 714, "echoed": 714, "unanswered": 0, "peak_in_flight": 4, "queue_high_water": 1, "max_queue_ms": 22.931, "rtt_ms": {"p50": 1.16, "p95": 1.695, "p99": 6.248, "max": 15.116}},
+    {"requested_hz": 500, "actual_send_hz": 499.85, "seconds": 3.001, "sent": 1500, "echoed": 1500, "unanswered": 0, "peak_in_flight": 3, "queue_high_water": 1, "max_queue_ms": 3.48, "rtt_ms": {"p50": 1.114, "p95": 1.791, "p99": 3.885, "max": 4.617}},
+    {"requested_hz": 1000, "actual_send_hz": 986.46, "seconds": 3.001, "sent": 2960, "echoed": 2960, "unanswered": 0, "peak_in_flight": 5, "queue_high_water": 1, "max_queue_ms": 2.639, "rtt_ms": {"p50": 1.193, "p95": 1.859, "p99": 3.214, "max": 4.474}}
+  ],
+  "errors": [],
+  "windows_1ms_timer_active": true
+}

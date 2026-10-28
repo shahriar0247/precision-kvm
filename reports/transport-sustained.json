@@ -1,0 +1,42 @@
+{
+  "kind": "input-free TLS transport probe",
+  "hardware_latency_measured": false,
+  "results": [
+    {
+      "requested_hz": 120,
+      "actual_send_hz": 120.06,
+      "seconds": 15.0,
+      "sent": 1801,
+      "echoed": 1801,
+      "unanswered": 0,
+      "peak_in_flight": 2,
+      "queue_high_water": 1,
+      "max_queue_ms": 9.064,
+      "rtt_ms": {
+        "p50": 1.061,
+        "p95": 1.484,
+        "p99": 10.044,
+        "max": 116.662
+      }
+    },
+    {
+      "requested_hz": 1000,
+      "actual_send_hz": 992.71,
+      "seconds": 15.0,
+      "sent": 14891,
+      "echoed": 14891,
+      "unanswered": 0,
+      "peak_in_flight": 11,
+      "queue_high_water": 1,
+      "max_queue_ms": 15.131,
+      "rtt_ms": {
+        "p50": 0.941,
+        "p95": 1.442,
+        "p99": 2.836,
+        "max": 15.239
+      }
+    }
+  ],
+  "errors": [],
+  "windows_1ms_timer_active": true
+}

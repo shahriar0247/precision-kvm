@@ -1,0 +1,160 @@
+{
+  "kind": "input-free TLS transport probe",
+  "hardware_latency_measured": false,
+  "results": [
+    {
+      "requested_hz": 120,
+      "actual_send_hz": 119.96,
+      "seconds": 15.004,
+      "sent": 1800,
+      "echoed": 1800,
+      "unanswered": 0,
+      "peak_in_flight": 1,
+      "queue_high_water": 1,
+      "max_queue_ms": 20.175,
+      "rtt_ms": {
+        "p50": 1.092,
+        "p95": 1.264,
+        "p99": 1.884,
+        "max": 3.474
+      },
+      "send_interval_ms": {
+        "p50": 8.358,
+        "p95": 8.683,
+        "p99": 8.804,
+        "max": 20.411
+      },
+      "send_call_ms": {
+        "p50": 0.127,
+        "p95": 0.187,
+        "p99": 0.225,
+        "max": 0.371
+      },
+      "tail_samples": [
+        {
+          "sequence": 1680,
+          "offset_ms": 14012.741,
+          "rtt_ms": 3.474,
+          "send_call_ms": 0.183,
+          "send_gap_ms": 8.073,
+          "receive_gap_ms": 8.252,
+          "echo_processing_ms": 0.003
+        },
+        {
+          "sequence": 1342,
+          "offset_ms": 11195.88,
+          "rtt_ms": 3.382,
+          "send_call_ms": 0.15,
+          "send_gap_ms": 7.996,
+          "receive_gap_ms": 10.225,
+          "echo_processing_ms": 0.004
+        },
+        {
+          "sequence": 1180,
+          "offset_ms": 9846.183,
+          "rtt_ms": 3.337,
+          "send_call_ms": 0.177,
+          "send_gap_ms": 8.581,
+          "receive_gap_ms": 10.827,
+          "echo_processing_ms": 0.003
+        },
+        {
+          "sequence": 1679,
+          "offset_ms": 14004.668,
+          "rtt_ms": 3.295,
+          "send_call_ms": 0.161,
+          "send_gap_ms": 8.563,
+          "receive_gap_ms": 10.617,
+          "echo_processing_ms": 0.008
+        },
+        {
+          "sequence": 1178,
+          "offset_ms": 9829.61,
+          "rtt_ms": 3.049,
+          "send_call_ms": 0.186,
+          "send_gap_ms": 8.721,
+          "receive_gap_ms": 9.183,
+          "echo_processing_ms": 0.003
+        }
+      ]
+    },
+    {
+      "requested_hz": 1000,
+      "actual_send_hz": 995.58,
+      "seconds": 15.0,
+      "sent": 14934,
+      "echoed": 14934,
+      "unanswered": 0,
+      "peak_in_flight": 11,
+      "queue_high_water": 1,
+      "max_queue_ms": 15.355,
+      "rtt_ms": {
+        "p50": 0.917,
+        "p95": 1.182,
+        "p99": 1.397,
+        "max": 17.846
+      },
+      "send_interval_ms": {
+        "p50": 1.021,
+        "p95": 1.243,
+        "p99": 1.527,
+        "max": 15.715
+      },
+      "send_call_ms": {
+        "p50": 0.071,
+        "p95": 0.123,
+        "p99": 0.162,
+        "max": 0.403
+      },
+      "tail_samples": [
+        {
+          "sequence": 15936,
+          "offset_ms": 14183.212,
+          "rtt_ms": 17.846,
+          "send_call_ms": 0.146,
+          "send_gap_ms": 0.991,
+          "receive_gap_ms": 17.608,
+          "echo_processing_ms": 0.001
+        },
+        {
+          "sequence": 15937,
+          "offset_ms": 14185.162,
+          "rtt_ms": 16.205,
+          "send_call_ms": 0.298,
+          "send_gap_ms": 1.949,
+          "receive_gap_ms": 0.308,
+          "echo_processing_ms": 0.001
+        },
+        {
+          "sequence": 15796,
+          "offset_ms": 14040.55,
+          "rtt_ms": 10.676,
+          "send_call_ms": 0.071,
+          "send_gap_ms": 1.057,
+          "receive_gap_ms": 1.157,
+          "echo_processing_ms": 0.003
+        },
+        {
+          "sequence": 15795,
+          "offset_ms": 14039.492,
+          "rtt_ms": 10.577,
+          "send_call_ms": 0.141,
+          "send_gap_ms": 1.067,
+          "receive_gap_ms": 7.322,
+          "echo_processing_ms": 0.002
+        },
+        {
+          "sequence": 15797,
+          "offset_ms": 14041.507,
+          "rtt_ms": 9.746,
+          "send_call_ms": 0.054,
+          "send_gap_ms": 0.958,
+          "receive_gap_ms": 0.028,
+          "echo_processing_ms": 0.0
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "windows_1ms_timer_active": true
+}
