@@ -336,18 +336,16 @@ class MacClipboard:
     def __init__(self):
         import AppKit
         import Foundation
+        import objc
         self.appkit, self.foundation = AppKit, Foundation
+        self._autorelease_pool = objc.autorelease_pool
 
     def revision(self):
-        pool = self.foundation.NSAutoreleasePool.alloc().init()
-        try:
+        with self._autorelease_pool():
             return int(self.appkit.NSPasteboard.generalPasteboard().changeCount())
-        finally:
-            pool.drain()
 
     def read(self, max_bytes):
-        pool = self.foundation.NSAutoreleasePool.alloc().init()
-        try:
+        with self._autorelease_pool():
             a = self.appkit
             board = a.NSPasteboard.generalPasteboard()
             result = {}
@@ -376,15 +374,12 @@ class MacClipboard:
             if result:
                 validate_bundle(result, max_bytes)
             return result or None
-        finally:
-            pool.drain()
 
     def write(self, bundle, max_bytes):
         validate_bundle(bundle, max_bytes)
         if PNG in bundle:
             verify_png(bundle[PNG], max_bytes)
-        pool = self.foundation.NSAutoreleasePool.alloc().init()
-        try:
+        with self._autorelease_pool():
             a, f = self.appkit, self.foundation
             item = a.NSPasteboardItem.alloc().init()
             if TEXT in bundle:
@@ -396,8 +391,6 @@ class MacClipboard:
             board.clearContents()
             if not board.writeObjects_([item]):
                 raise OSError("macOS refused clipboard write")
-        finally:
-            pool.drain()
 
     def close(self):
         pass

@@ -3,12 +3,31 @@
 **Your Windows keyboard and mouse. Your Mac. One connected workspace.**
 
 [![MIT license](https://img.shields.io/badge/license-MIT-40cdb6)](LICENSE)
-[![Release builds](https://github.com/shahriar0247/precision-kvm/actions/workflows/release.yml/badge.svg)](https://github.com/shahriar0247/precision-kvm/actions/workflows/release.yml)
-[![Downloads](https://img.shields.io/github/v/release/shahriar0247/precision-kvm)](https://github.com/shahriar0247/precision-kvm/releases)
+[![Source version](https://img.shields.io/badge/source-0.2.0-365376)](CHANGELOG.md)
 
 PrecisionKVM is an open-source input-sharing app with a Windows host panel, a native Mac client, encrypted clipboard sharing and Mac preferences for Windows users. Move through the edge of your PC screen to control the Mac, then move back to return.
 
-[Download a release](https://github.com/shahriar0247/precision-kvm/releases) · [Build from source](docs/releases.md) · [Report a bug](https://github.com/shahriar0247/precision-kvm/issues)
+[Quick start](#quick-start-from-source) · [Optional native builds](docs/releases.md) · [Report a bug](https://github.com/shahriar0247/precision-kvm/issues)
+
+## Quick start from source
+
+Python 3.9+ is required for source installations. Use Python 3.11+ for the native packaging tools.
+
+On Windows:
+
+    git clone https://github.com/shahriar0247/precision-kvm.git
+    cd precision-kvm
+    python -m pip install -e .
+    python -m precision_kvm gui
+
+On Mac, in a Python virtual environment:
+
+    git clone https://github.com/shahriar0247/precision-kvm.git
+    cd precision-kvm
+    python -m pip install -e ".[mac]"
+    python -m precision_kvm client-gui
+
+Export pairing from the Windows panel, import it in the Mac panel, then connect. Accessibility approval is required on the Mac. Native packages can be built using the optional workflow; no public binary release is required to run the project.
 
 ## What you get
 
@@ -25,9 +44,9 @@ PrecisionKVM is an open-source input-sharing app with a Windows host panel, a na
 
 This shares input and clipboard content. It does not stream video or replace a hardware KVM for BIOS/login screens.
 
-## Downloads
+## Optional native packages
 
-Native release packages contain Python and the app dependencies; a separate Python installation is not required.
+The optional native build workflow produces packages containing Python and the app dependencies. These are build targets, not a claim that a public release has been published.
 
 | Download | Role |
 |---|---|

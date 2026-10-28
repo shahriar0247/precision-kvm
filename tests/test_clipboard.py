@@ -1,5 +1,6 @@
 """Clipboard tests use fake backends only; never touch the operating-system clipboard."""
 import base64
+from contextlib import contextmanager, nullcontext
 import hashlib
 import io
 import json
@@ -299,10 +300,11 @@ def test_invalid_png_never_clears_mac_clipboard(corrupt):
         image = image[:8] + b"".join(chunks)
     backend = MacClipboard.__new__(MacClipboard)
     backend.appkit, backend.foundation = Mock(), Mock()
+    backend._autorelease_pool = Mock(side_effect=nullcontext)
     with pytest.raises(ProtocolError, match="PNG"):
         backend.write({PNG: bytes(image)}, 1024)
     backend.appkit.NSPasteboard.generalPasteboard.assert_not_called()
-    backend.foundation.NSAutoreleasePool.alloc.assert_not_called()
+    backend._autorelease_pool.assert_not_called()
 
 
 def test_mac_oversized_text_is_checked_before_allocating_bytes():
@@ -315,11 +317,57 @@ def test_mac_oversized_text_is_checked_before_allocating_bytes():
 
     backend = MacClipboard.__new__(MacClipboard)
     backend.appkit, backend.foundation = Mock(), Mock()
+    backend._autorelease_pool = Mock(side_effect=nullcontext)
     board = backend.appkit.NSPasteboard.generalPasteboard.return_value
     board.dataForType_.return_value = HugeData()
     with pytest.raises(ValueError, match="size"):
         backend.read(1024)
     board.stringForType_.assert_not_called()
+
+
+def test_mac_calls_use_owned_autorelease_contexts_without_manual_pool_drain():
+    entries, exits = [], []
+
+    @contextmanager
+    def pool():
+        entries.append(True)
+        try:
+            yield
+        finally:
+            exits.append(True)
+
+    backend = MacClipboard.__new__(MacClipboard)
+    backend.appkit, backend.foundation = Mock(), Mock()
+    backend._autorelease_pool = pool
+    board = backend.appkit.NSPasteboard.generalPasteboard.return_value
+    board.changeCount.return_value = 7
+    board.dataForType_.return_value = None
+    board.writeObjects_.return_value = True
+    assert backend.revision() == 7
+    assert backend.read(1024) is None
+    backend.write({TEXT: b"safe fake text"}, 1024)
+    assert len(entries) == len(exits) == 3
+    backend.foundation.NSAutoreleasePool.alloc.assert_not_called()
+
+
+def test_mac_autorelease_context_exits_when_native_access_fails():
+    entered, exited = [], []
+
+    @contextmanager
+    def pool():
+        entered.append(True)
+        try:
+            yield
+        finally:
+            exited.append(True)
+
+    backend = MacClipboard.__new__(MacClipboard)
+    backend.appkit, backend.foundation = Mock(), Mock()
+    backend._autorelease_pool = pool
+    backend.appkit.NSPasteboard.generalPasteboard.side_effect = OSError("fake pasteboard unavailable")
+    with pytest.raises(OSError):
+        backend.revision()
+    assert entered == exited == [True]
 
 
 def test_slow_image_conversion_does_not_trigger_two_second_idle_disconnect():
