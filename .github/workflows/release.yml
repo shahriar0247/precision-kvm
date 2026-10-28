@@ -58,6 +58,35 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           architecture: ${{ matrix.architecture }}
+      - name: Prepare native OpenSSL for Windows ARM64 cryptography
+        if: matrix.target == 'windows-arm64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidates = @()
+          foreach ($root in @($env:VCPKG_INSTALLATION_ROOT, $env:VCPKG_ROOT)) {
+            if ($root) { $candidates += Join-Path $root 'vcpkg.exe' }
+          }
+          $command = Get-Command vcpkg.exe -ErrorAction SilentlyContinue
+          if ($command) { $candidates += $command.Source }
+          $candidates += 'C:\vcpkg\vcpkg.exe'
+          $vcpkgExecutable = $candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+          if (-not $vcpkgExecutable) { throw 'The Windows ARM64 runner has no preinstalled vcpkg executable.' }
+          $vcpkgRoot = Split-Path -Parent $vcpkgExecutable
+          $env:VCPKG_ROOT = $vcpkgRoot
+          & $vcpkgExecutable install 'openssl:arm64-windows-static' --disable-metrics
+          if ($LASTEXITCODE -ne 0) { throw "Native ARM64 OpenSSL installation failed with exit code $LASTEXITCODE" }
+          $opensslDirectory = Join-Path $vcpkgRoot 'installed/arm64-windows-static'
+          foreach ($required in @('include/openssl/ssl.h', 'lib/libssl.lib', 'lib/libcrypto.lib', 'share/openssl/copyright')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $opensslDirectory $required))) {
+              throw "Native OpenSSL installation is incomplete: $required"
+            }
+          }
+          "VCPKG_ROOT=$vcpkgRoot" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
+          "OPENSSL_DIR=$opensslDirectory" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
+          "OPENSSL_STATIC=1" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
+          "OPENSSL_NO_VENDOR=1" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
+          "PRECISION_KVM_OPENSSL_LICENSE=$(Join-Path $opensslDirectory 'share/openssl/copyright')" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
       - name: Install native dependencies
         run: |
           python -m pip install --upgrade pip

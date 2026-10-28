@@ -28,6 +28,8 @@ python tools/build_release.py
 
 The helper reads the package version, runs `packaging/PrecisionKVM.spec`, creates an archive under `artifacts/`, and writes its `.sha256` sidecar. macOS uses `ditto` so framework symlinks, executable bits and app metadata survive archiving. It does not publish anything. `--skip-build` archives an already-built native bundle.
 
+Windows ARM64 currently builds `cryptography` from source because its native wheel is unavailable for this target. The workflow uses the runner's preinstalled vcpkg to build `openssl:arm64-windows-static`, sets `OPENSSL_DIR`, `OPENSSL_STATIC=1` and `OPENSSL_NO_VENDOR=1`, then installs the Python dependencies with the runner's native Rust/MSVC toolchain. OpenSSL's license is included in the bundle. Local ARM64 builders need the equivalent native OpenSSL/toolchain setup; end users of the portable archive do not.
+
 Native builds generate a deterministic monitor/link icon from `packaging/make_icon.py`: a multi-resolution Windows `.ico` or Mac `.icns`. Generated icons stay under `build/icons`; no external image download is required.
 
 PyInstaller builds on the native OS and uses the selected Python architecture. Running a Windows build does not create a Mac app. Python, PyObjC, Tk and dependency versions constrain the minimum supported OS; each candidate release must be tested on the intended user machines rather than assuming universal backward compatibility.

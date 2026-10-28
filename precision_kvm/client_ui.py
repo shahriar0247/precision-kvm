@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 from pathlib import Path
 import queue
@@ -39,6 +40,7 @@ class ClientController:
                 and isinstance(config.get("token"),str) and len(config["token"])>=32)
 
     def post_status(self, message):
+        logging.info("%s", message)
         try:
             self.messages.put_nowait(str(message))
         except queue.Full:
@@ -138,6 +140,9 @@ def run_client_gui(config_path: Path):
     import AppKit as a
     import Foundation as f
     import objc
+    from .config import state_dir
+    logging.basicConfig(filename=str(state_dir() / "mac-client-status.log"), level=logging.INFO,
+                        format="%(asctime)s %(message)s")
 
     controller = ClientController(config_path)
     config = controller.configuration()

@@ -13,6 +13,8 @@ icon_path = root / "build" / "icons" / ("PrecisionKVM.icns" if sys.platform == "
 runpy.run_path(str(root / "packaging" / "make_icon.py"))["create_icon"](icon_path)
 datas = [(str(root / "LICENSE"), "."), (str(root / "README.md"), "."),
          (str(icon_path), "assets")]
+if os.environ.get("PRECISION_KVM_OPENSSL_LICENSE"):
+    datas.append((os.environ["PRECISION_KVM_OPENSSL_LICENSE"], "licenses/OpenSSL"))
 binaries = []
 hiddenimports = ["PIL.Image", "PIL.PngImagePlugin", "PIL.TiffImagePlugin"]
 excludes = []
