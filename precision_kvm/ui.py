@@ -122,6 +122,8 @@ class ControlPanel:
                              lambda e: setattr(self, "_drag", (e.x, e.y)))
         self.canvas.bind("<B1-Motion>", self._drag_mac)
         self.canvas.bind("<ButtonRelease-1>", self._drop_mac)
+        self.variables["peer_align"] = tk.DoubleVar(value=self.settings.get("peer_align", 0.5))
+        self.variables["peer_align"].trace_add("write", lambda *args: self.draw_layout())
         self.field(connection, 1, "Mac address", "peer")
         self.field(connection, 2, "Mac SSH target", "ssh_target")
         self.field(connection, 3, "Monitor position", "side", ("left", "right", "top", "bottom"))
@@ -313,11 +315,20 @@ class ControlPanel:
         canvas.delete("all")
         cx, cy = max(canvas.winfo_width(), 700) / 2, 85
         side = self.variables["side"].get()
+        try:
+            align = float(self.variables["peer_align"].get())
+        except (KeyError, tk.TclError):
+            align = 0.5
         dx, dy = {"left": (-190, 0), "right": (190, 0), "top": (0, -75), "bottom": (0, 75)}[side]
+        room = 130 if dy else 300
+        along = (align - 0.5) * room
+        ax, ay = (0, along) if dy else (along, 0)
+        px, py = cx - dx / 2, cy - dy / 2
+        mx, my = cx + dx / 2 + ax, cy + dy / 2 + ay
+        canvas.create_line(px, py, mx, my, fill="#2b4a75", width=3)
         w, h = (140, 54) if dy else (160, 90)
-        canvas.create_line(cx-dx/2, cy-dy/2, cx+dx/2, cy+dy/2, fill="#3fd3bd", width=2)
-        for x, y, label, color, tag in ((cx-dx/2, cy-dy/2, "THIS PC", "#2b4a75", "pcbox"),
-                                        (cx+dx/2, cy+dy/2, "MAC CLIENT", "#1f7a6c", "macbox")):
+        for x, y, label, color, tag in ((px, py, "THIS PC", "#2b4a75", "pcbox"),
+                                        (mx, my, "MAC CLIENT", "#1f7a6c", "macbox")):
             canvas.create_rectangle(x-w/2, y-h/2, x+w/2, y+h/2, fill=color,
                                     outline="#4d6a8c", width=2, tags=tag)
             canvas.create_text(x, y, text=label, fill="white",
@@ -344,6 +355,12 @@ class ControlPanel:
         side = ("left" if ox < 0 else "right") if abs(ox) > abs(oy) else ("top" if oy < 0 else "bottom")
         options = DISPLAY_OPTIONS.get("side", {})
         self.variables["side"].set(options.get(side, side))
+        dx, dy = {"left": (-190, 0), "right": (190, 0), "top": (0, -75), "bottom": (0, 75)}[side]
+        room = 130 if dy else 300
+        pc = (cy - dy / 2) if dy else (cx - dx / 2)
+        m = my if dy else mx
+        align = min(1.0, max(0.0, 0.5 + (m - pc) / room))
+        self.variables["peer_align"].set(round(align, 3))
 
     def refresh_logs(self):
         try:

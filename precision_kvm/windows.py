@@ -27,7 +27,8 @@ class WindowsCapture:
     def __init__(self, on_event: Callable[[dict], object], side: str = "left",
                  high_resolution_timer: bool = False, on_emergency=None,
                  emergency_escape_seconds=1.5, mouse_mode="raw", gesture_bridge=True,
-                 native_touchpad=False, mac_mode=False):
+                 native_touchpad=False, mac_mode=False,
+                 peer_align=0.5, peer_span=0.6):
         if side not in {"left", "right", "top", "bottom"}:
             raise ValueError("side must be left, right, top, or bottom")
         self.on_event = on_event
@@ -42,6 +43,8 @@ class WindowsCapture:
         self.gestures = GestureShortcutBridge()
         self.native_touchpad = bool(native_touchpad)
         self.mac_mode = bool(mac_mode)
+        self.peer_align = float(peer_align)
+        self.peer_span = float(peer_span)
         self._mac_alt = self._mac_ctrl = self._mac_alt_injected = False
         self.touchpads: WindowsTouchpads | None = None
         self._emergency_requested = False
@@ -148,8 +151,15 @@ class WindowsCapture:
 
     def _at_edge(self, x, y):
         width, height = self._size
-        return {"left": x <= 0, "right": x >= width - 1,
-                "top": y <= 0, "bottom": y >= height - 1}[self.side]
+        on_edge = {"left": x <= 0, "right": x >= width - 1,
+                   "top": y <= 0, "bottom": y >= height - 1}[self.side]
+        if not on_edge:
+            return False
+        # Crossing is limited to where the peer screen overlaps this edge.
+        span = self._size[1] if self.side in ("left", "right") else self._size[0]
+        t = (y if self.side in ("left", "right") else x) / max(1, span - 1)
+        half = self.peer_span / 2
+        return self.peer_align - half <= t <= self.peer_align + half
 
     def _run(self):
         user = ctypes.WinDLL("user32", use_last_error=True)

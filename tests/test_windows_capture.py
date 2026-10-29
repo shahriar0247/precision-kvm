@@ -12,7 +12,7 @@ class CaptureStateTests(unittest.TestCase):
     def test_edges_and_safe_return(self):
         for side, point in (("left", (0, 100)), ("right", (1919, 100)),
                             ("top", (100, 0)), ("bottom", (100, 1079))):
-            capture = WindowsCapture(lambda event: None, side)
+            capture = WindowsCapture(lambda event: None, side, peer_span=1.0)
             capture._size = (1920, 1080)
             self.assertTrue(capture._at_edge(*point))
             self.assertFalse(capture._at_edge(100, 100))
@@ -21,6 +21,13 @@ class CaptureStateTests(unittest.TestCase):
             self.assertLess(x, 1919)
             self.assertGreater(y, 0)
             self.assertLess(y, 1079)
+
+    def test_peer_align_limits_crossing_to_shared_segment(self):
+        capture = WindowsCapture(lambda event: None, "left",
+                                 peer_align=0.8, peer_span=0.3)
+        capture._size = (1920, 1080)
+        self.assertTrue(capture._at_edge(0, int(1079 * 0.8)))
+        self.assertFalse(capture._at_edge(0, int(1079 * 0.2)))
 
     def test_callback_failure_recorded(self):
         def fail(event):

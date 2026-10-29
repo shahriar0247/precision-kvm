@@ -40,7 +40,7 @@ def load_settings() -> dict:
                 "keymap_preset": "option_cmd", "keymap": {}, "gesture_bridge": True,
                 "native_touchpad": False,
                 "clipboard_enabled": True, "clipboard_max_mb": 128,
-                "mac_mode": False,
+                "mac_mode": False, "peer_align": 0.5, "peer_span": 0.6,
                 "emergency_escape_seconds": 1.5, "smooth_scroll": True,
                 "smooth_scroll_ms": 60, "smooth_scroll_hz": 120,
                 "windows_home_end": True, "windows_word_nav": True}
@@ -61,7 +61,8 @@ def validate_settings(settings: dict) -> dict:
     result = dict(settings)
     for key, low, high in (("gain", 0.1, 5), ("scroll_gain", 0.1, 5),
                            ("scroll_gain_x", 0.1, 5), ("scroll_gain_y", 0.1, 5),
-                           ("emergency_escape_seconds", 0.5, 10)):
+                           ("emergency_escape_seconds", 0.5, 10),
+                           ("peer_align", 0.0, 1.0), ("peer_span", 0.1, 1.0)):
         value = float(result[key])
         if not math.isfinite(value) or not low <= value <= high:
             raise ValueError(f"{key} must be between {low} and {high}")
