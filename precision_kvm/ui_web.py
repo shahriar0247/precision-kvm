@@ -355,7 +355,7 @@ display:flex;align-items:center;justify-content:center;font-size:11px;font-weigh
 display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;
 cursor:grab;touch-action:none;z-index:2;box-shadow:0 2px 12px #0007}
 .peer.grab{cursor:grabbing;box-shadow:0 6px 22px #000a}
-.peer.snap{transition:left .28s cubic-bezier(.2,1.3,.35,1),top .28s cubic-bezier(.2,1.3,.35,1)}
+.peer.snap{transition:left .26s cubic-bezier(.16,1,.3,1),top .26s cubic-bezier(.16,1,.3,1)}
 .glow{position:absolute;background:var(--accent);opacity:.9;border-radius:2px;z-index:1}
 .note{color:var(--muted);font-size:12px}
 .log{white-space:pre-wrap;font:11.5px/1.5 "Cascadia Mono",Consolas,monospace;color:var(--muted);
@@ -579,7 +579,13 @@ function draggable(e,name){
    const cx=((ev.clientX-gx)+e.offsetWidth/2-ox)/scale;
    const cy=((ev.clientY-gy)+e.offsetHeight/2-oy)/scale;
    const r=await api().drop_peer(name,cx,cy);
-   if(r.ok){lay.peers=r.peers;renderLayout();}});
+   if(r.ok){
+     lay.peers=r.peers;
+     const nr=r.peers[name];
+     e.classList.add("snap");
+     e.style.left=(nr[0]*scale+ox)+"px";
+     e.style.top=(nr[1]*scale+oy)+"px";
+     setTimeout(renderLayout,280);}});
 }
 function drawGlow(stage){
  for(const r of Object.values(lay.peers))for(const m of lay.mons){
