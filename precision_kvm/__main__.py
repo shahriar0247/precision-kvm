@@ -40,7 +40,7 @@ def main():
             if settings.get("role", "host") == "host":
                 settings["role"] = "client"
                 save_json(state_dir() / "settings.json", settings)
-        run_ui(start=getattr(args, "start", False))
+        run_ui(start=getattr(args, "start", command == "client-gui"))
     elif command == "client":
         config_path = getattr(args, "config", None) or state_dir() / "client.json"
         try:
