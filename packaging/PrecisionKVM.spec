@@ -17,9 +17,22 @@ if os.environ.get("PRECISION_KVM_OPENSSL_LICENSE"):
     datas.append((os.environ["PRECISION_KVM_OPENSSL_LICENSE"], "licenses/OpenSSL"))
 binaries = []
 hiddenimports = ["PIL.Image", "PIL.PngImagePlugin", "PIL.TiffImagePlugin"]
-excludes = []
+# Bundled Flet desktop engine; flet_desktop checks its package dir first.
+flet_client_zip = root / "build" / ("flet-macos.tar.gz" if sys.platform == "darwin" else "flet-windows.zip")
+if flet_client_zip.is_file():
+    datas.append((str(flet_client_zip), "flet_desktop/app"))
+excludes = [
+    # flet's dependency chain otherwise drags the whole scientific stack in.
+    "pandas", "scipy", "torch", "torchvision", "torchaudio", "numba", "llvmlite",
+    "pyarrow", "botocore", "boto3", "s3transfer", "sqlalchemy", "openpyxl",
+    "onnxruntime", "opentelemetry", "tensorboard", "matplotlib", "sklearn",
+    "skimage", "sympy", "IPython", "jupyter", "pytest", "flet.testing",
+    "flet_web", "flet_cli", "uvicorn", "fastapi", "starlette",
+]
 if sys.platform == "darwin":
-    excludes += ["tkinter", "_tkinter", "precision_kvm.ui"]
+    excludes += ["tkinter", "_tkinter", "precision_kvm.ui",
+                 "precision_kvm.ui_qt", "precision_kvm.ui_flet",
+                 "PySide6", "flet"]
     for package in ("Quartz", "AppKit", "Foundation", "objc"):
         package_datas, package_binaries, package_hidden = collect_all(package)
         datas += package_datas

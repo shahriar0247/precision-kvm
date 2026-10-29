@@ -35,7 +35,7 @@ def run_ui(start: bool = False) -> None:
     def main(page):
         FletPanel(page, autostart=start)
 
-    ft.app(target=main)
+    ft.run(main)
 
 
 class FletPanel:

@@ -24,6 +24,32 @@ def native_target(system: str, machine: str) -> str:
     raise ValueError(f"No native release target for {system}/{machine}; supported: Windows/macOS x64/arm64")
 
 
+def _stage_flet_client() -> None:
+    """Bundle the downloaded Flet desktop engine so first runs stay offline.
+
+    flet_desktop looks for its platform archive inside the package at
+    ``flet_desktop/app/flet-windows.zip`` before hitting the network.
+    """
+    if sys.platform != "win32":
+        return
+    cache = Path.home() / ".flet" / "client"
+    sources = sorted(cache.glob("flet-desktop-full-*/flet")) if cache.is_dir() else []
+    if not sources:
+        print("note: Flet desktop client not cached; bundle will download on first run")
+        return
+    source = sources[-1]
+    target = ROOT / "build" / "flet-windows.zip"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    newest = max(path.stat().st_mtime for path in source.rglob("*") if path.is_file())
+    if target.exists() and target.stat().st_mtime >= newest:
+        return
+    with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(source.rglob("*")):
+            if path.is_file():
+                archive.write(path, path.relative_to(source.parent))
+    print(f"Bundled Flet desktop client: {target}")
+
+
 def write_checksum(path: Path) -> Path:
     with path.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
@@ -41,6 +67,7 @@ def main():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     version = project["version"]
     if not args.skip_build:
+        _stage_flet_client()
         subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
                         str(ROOT / "packaging" / "PrecisionKVM.spec")], cwd=ROOT,
                        env=dict(os.environ, PRECISION_KVM_BUILD_VERSION=version), check=True)
