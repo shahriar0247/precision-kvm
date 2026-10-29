@@ -22,8 +22,8 @@ MUTED = "#8b98ad"
 DANGER = "#ff7a8a"
 
 QSS = f"""
-QMainWindow, QWidget {{ background: {BG}; color: {INK};
-    font-family: "Segoe UI"; font-size: 13px; }}
+QMainWindow {{ background: {BG}; }}
+QWidget {{ color: {INK}; font-family: "Segoe UI"; font-size: 13px; }}
 QListWidget#nav {{ background: {CARD}; border: none; outline: none;
     padding: 12px 8px; font-size: 14px; }}
 QListWidget#nav::item {{ padding: 12px 18px; border-radius: 8px; color: {MUTED}; }}
