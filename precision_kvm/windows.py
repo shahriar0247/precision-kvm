@@ -17,6 +17,23 @@ from .safety import EmergencyMonitor
 from .touchpad import WindowsTouchpads
 
 
+# Mac-style chords injected while input stays local and mac_mode is on.
+# Each entry maps the source VK to a synthetic (vk, down) sequence so the
+# Alt key sits where Command would be on a Mac keyboard.
+MAC_CHORDS = {
+    0x25: ((0x24, True), (0x24, False)),                                   # Cmd+Left → Home
+    0x27: ((0x23, True), (0x23, False)),                                   # Cmd+Right → End
+    0x26: ((0x11, True), (0x24, True), (0x24, False), (0x11, False)),      # Cmd+Up → Ctrl+Home
+    0x28: ((0x11, True), (0x23, True), (0x23, False), (0x11, False)),      # Cmd+Down → Ctrl+End
+    0x08: ((0x10, True), (0x24, True), (0x24, False), (0x10, False),
+           (0x2E, True), (0x2E, False)),                                   # Cmd+Backspace → delete to line start
+    0x20: ((0x5B, True), (0x53, True), (0x53, False), (0x5B, False)),      # Cmd+Space → Win+S search
+    0x51: ((0x12, True), (0x73, True), (0x73, False), (0x12, False)),      # Cmd+Q → Alt+F4 quit app
+    0x4D: ((0x5B, True), (0x28, True), (0x28, False), (0x5B, False)),      # Cmd+M → Win+Down minimize
+}
+MAC_CHORDS_SHIFT = {0x33, 0x34}  # Cmd+Shift+3/4 → Win+Shift+S screenshot
+
+
 class WindowsCapture:
     """Share Windows input when crossing the configured primary-screen edge.
 
@@ -307,9 +324,21 @@ class WindowsCapture:
                                 self._mac_ctrl = False
                             user.keybd_event(0x12, 0, 0, 0)
                             self._mac_alt_injected = True
-                        elif down and not self._mac_ctrl:
-                            user.keybd_event(0x11, 0, 0, 0)
-                            self._mac_ctrl = True
+                        else:
+                            shift = bool(self._keys & {0x10, 0xA0, 0xA1})
+                            seq = (MAC_CHORDS[0x20] if vk in MAC_CHORDS_SHIFT and shift
+                                   else MAC_CHORDS.get(vk))
+                            if seq is not None:
+                                if down:
+                                    if self._mac_ctrl:
+                                        user.keybd_event(0x11, 0, 2, 0)
+                                        self._mac_ctrl = False
+                                    for kv, kdown in seq:
+                                        user.keybd_event(kv, 0, 0 if kdown else 2, 0)
+                                return 1
+                            if down and not self._mac_ctrl:
+                                user.keybd_event(0x11, 0, 0, 0)
+                                self._mac_ctrl = True
                         return next_hook(code, message, pointer)
             except Exception as exc:
                 self.error = str(exc)

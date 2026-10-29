@@ -199,8 +199,9 @@ class ControlPanel:
         self.note(sharing, 2, "New copies sync over a separate encrypted connection, keeping large copies\n"
                   "out of the input queue. Connecting does not overwrite existing clipboard data.\n"
                   "Supports text and PNG images; files and rich HTML are not included.")
-        self.check(sharing, 3, "Mac-style shortcuts on this PC — Alt acts like Command "
-                  "(Alt+C copy, Alt+F find); Alt+Tab stays unchanged", "mac_mode")
+        self.check(sharing, 3, "Mac-style shortcuts on this PC — Alt sits where Command would: "
+                  "Alt+C copy, Alt+Space search, Alt+Q quit, Alt+arrows Home/End, "
+                  "Alt+Shift+3/4 screenshot; Alt+Tab stays unchanged", "mac_mode")
         self.field(sharing, 4, "Hold physical Esc to STOP (seconds)", "emergency_escape_seconds", bounds=(0.5, 10, 0.1))
         self.note(sharing, 5, "Hold Esc for the chosen time to STOP the PC server and clipboard\n"
                   "sharing, restore local input and prevent edge re-entry until you start\n"
@@ -320,13 +321,15 @@ class ControlPanel:
         except (KeyError, tk.TclError):
             align = 0.5
         dx, dy = {"left": (-190, 0), "right": (190, 0), "top": (0, -75), "bottom": (0, 75)}[side]
-        room = 130 if dy else 300
+        room = 110 if dy else 300
         along = (align - 0.5) * room
         ax, ay = (0, along) if dy else (along, 0)
         px, py = cx - dx / 2, cy - dy / 2
         mx, my = cx + dx / 2 + ax, cy + dy / 2 + ay
-        canvas.create_line(px, py, mx, my, fill="#2b4a75", width=3)
         w, h = (140, 54) if dy else (160, 90)
+        mx = min(canvas.winfo_width() - w / 2, max(w / 2, mx))
+        my = min(160 - h / 2, max(h / 2, my))
+        canvas.create_line(px, py, mx, my, fill="#2b4a75", width=3, tags="link")
         for x, y, label, color, tag in ((px, py, "THIS PC", "#2b4a75", "pcbox"),
                                         (mx, my, "MAC CLIENT", "#1f7a6c", "macbox")):
             canvas.create_rectangle(x-w/2, y-h/2, x+w/2, y+h/2, fill=color,
@@ -342,6 +345,12 @@ class ControlPanel:
         if self.canvas.find_withtag("macbox"):
             self.canvas.move("macbox", dx, dy)
             self._drag = (event.x, event.y)
+            mac = self.canvas.bbox("macbox")
+            pc = self.canvas.bbox("pcbox")
+            link = self.canvas.find_withtag("link")
+            if mac and pc and link:
+                self.canvas.coords(link[0], (pc[0]+pc[2])/2, (pc[1]+pc[3])/2,
+                                   (mac[0]+mac[2])/2, (mac[1]+mac[3])/2)
 
     def _drop_mac(self, _event):
         items = self.canvas.find_withtag("macbox")
@@ -352,11 +361,14 @@ class ControlPanel:
         mx, my = (x0 + x1) / 2, (y0 + y1) / 2
         cx, cy = max(self.canvas.winfo_width(), 700) / 2, 85
         ox, oy = mx - cx, my - cy
+        if abs(ox) < 45 and abs(oy) < 35:
+            self.draw_layout()
+            return
         side = ("left" if ox < 0 else "right") if abs(ox) > abs(oy) else ("top" if oy < 0 else "bottom")
         options = DISPLAY_OPTIONS.get("side", {})
         self.variables["side"].set(options.get(side, side))
         dx, dy = {"left": (-190, 0), "right": (190, 0), "top": (0, -75), "bottom": (0, 75)}[side]
-        room = 130 if dy else 300
+        room = 110 if dy else 300
         pc = (cy - dy / 2) if dy else (cx - dx / 2)
         m = my if dy else mx
         align = min(1.0, max(0.0, 0.5 + (m - pc) / room))
