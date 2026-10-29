@@ -222,6 +222,9 @@ class FletPanel:
                        self._check("Mac-style shortcuts on this PC — Alt acts as Command "
                                    "(Alt+C copy, Alt+Space search, Alt+Q quit; "
                                    "Alt+Tab unchanged)", "mac_mode"),
+                       self._check("Lock the Mac when this PC locks "
+                                   "(input is never shared on the lock screen)",
+                                   "lock_sync"),
                        self._field("Keyboard preset on the Mac", "keymap_preset",
                                    ["option_cmd", "native", "ctrl_cmd", "mac_layout"]),
                        self._check("Home / End move to line start / end", "windows_home_end"),

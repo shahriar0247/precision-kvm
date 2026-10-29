@@ -202,8 +202,10 @@ class ControlPanel:
         self.check(sharing, 3, "Mac-style shortcuts on this PC — Alt sits where Command would: "
                   "Alt+C copy, Alt+Space search, Alt+Q quit, Alt+arrows Home/End, "
                   "Alt+Shift+3/4 screenshot; Alt+Tab stays unchanged", "mac_mode")
-        self.field(sharing, 4, "Hold physical Esc to STOP (seconds)", "emergency_escape_seconds", bounds=(0.5, 10, 0.1))
-        self.note(sharing, 5, "Hold Esc for the chosen time to STOP the PC server and clipboard\n"
+        self.check(sharing, 4, "Lock the Mac when this PC locks "
+                  "(input is never shared on the lock screen)", "lock_sync")
+        self.field(sharing, 5, "Hold physical Esc to STOP (seconds)", "emergency_escape_seconds", bounds=(0.5, 10, 0.1))
+        self.note(sharing, 6, "Hold Esc for the chosen time to STOP the PC server and clipboard\n"
                   "sharing, restore local input and prevent edge re-entry until you start\n"
                   "the host again. Ctrl+Alt+F12 returns locally without stopping.\n\n"
                   "Mac-style shortcuts apply while input is local; over the KVM Alt already\n"

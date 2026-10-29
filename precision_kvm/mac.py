@@ -255,7 +255,9 @@ class MacInjector:
                     "desktop_right":(self.q.kCGEventFlagMaskControl,124),
                     "mission_control":(self.q.kCGEventFlagMaskControl,126),
                     "app_expose":(self.q.kCGEventFlagMaskControl,125),
-                    "show_desktop":(0,103)}
+                    "show_desktop":(0,103),
+                    "lock_screen":(self.q.kCGEventFlagMaskControl
+                                   | self.q.kCGEventFlagMaskCommand,12)}
         if action not in gestures:
             return
         flags,code = gestures[action]
@@ -319,6 +321,10 @@ class MacInjector:
             return
         if kind in ("deactivate","release"):
             self.release_all()
+            return
+        if kind == "lock":
+            self.release_all()
+            self._gesture("lock_screen")
             return
         if not self.active:
             return

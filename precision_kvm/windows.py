@@ -45,7 +45,7 @@ class WindowsCapture:
     def __init__(self, on_event: Callable[[dict], object], side: str = "left",
                  high_resolution_timer: bool = False, on_emergency=None,
                  emergency_escape_seconds=1.5, mouse_mode="raw", gesture_bridge=True,
-                 native_touchpad=False, mac_mode=False,
+                 native_touchpad=False, mac_mode=False, lock_sync=True,
                  peer_align=0.5, peer_span=0.6, peers=None):
         if side not in {"left", "right", "top", "bottom"}:
             raise ValueError("side must be left, right, top, or bottom")
@@ -61,6 +61,8 @@ class WindowsCapture:
         self.gestures = GestureShortcutBridge()
         self.native_touchpad = bool(native_touchpad)
         self.mac_mode = bool(mac_mode)
+        self.lock_sync = bool(lock_sync)
+        self.locked = False
         self.peer_align = float(peer_align)
         self.peer_span = float(peer_span)
         self.peers = dict(peers) if peers else None
@@ -221,7 +223,7 @@ class WindowsCapture:
 
         @hook_t
         def mouse_hook(code, message, pointer):
-            if code < 0:
+            if code < 0 or self.locked:
                 return next_hook(code, message, pointer)
             try:
                 data = ctypes.cast(pointer, ctypes.POINTER(Mouse)).contents
@@ -276,7 +278,7 @@ class WindowsCapture:
 
         @hook_t
         def keyboard_hook(code, message, pointer):
-            if code < 0:
+            if code < 0 or self.locked:
                 return next_hook(code, message, pointer)
             try:
                 data = ctypes.cast(pointer, ctypes.POINTER(Keyboard)).contents
@@ -405,6 +407,16 @@ class WindowsCapture:
         @wndproc_t
         def window_proc(hwnd, message, wp, lp):
             nonlocal raw_buffer
+            if message == 0x02B1:  # WM_WTSSESSION_CHANGE
+                if wp == 0x7:      # WTS_SESSION_LOCK
+                    self.locked = True
+                    # Restore the local pointer before the secure desktop
+                    # takes over, then ask peers to lock as well.
+                    self.release()
+                    if self.lock_sync and self.peer_connected:
+                        self._emit({"type": "lock"})
+                elif wp == 0x8:    # WTS_SESSION_UNLOCK
+                    self.locked = False
             if message == 0x0113 and self.active:
                 reason = self.safety.tick()
                 if reason:
@@ -440,6 +452,7 @@ class WindowsCapture:
             return user.DefWindowProcW(hwnd, message, wp, lp)
 
         self._window_callback = window_proc
+        wtsapi = None
         try:
             msg = wintypes.MSG()
             user.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0)
@@ -451,6 +464,13 @@ class WindowsCapture:
             window = user.CreateWindowExW(0, class_name, class_name, 0, 0, 0, 0, 0,
                                           wintypes.HWND(-3), None, module, None)
             if not window:
+                raise ctypes.WinError(ctypes.get_last_error())
+            wtsapi = ctypes.WinDLL("wtsapi32", use_last_error=True)
+            wtsapi.WTSRegisterSessionNotification.argtypes = [wintypes.HWND, wintypes.DWORD]
+            wtsapi.WTSRegisterSessionNotification.restype = wintypes.BOOL
+            wtsapi.WTSUnRegisterSessionNotification.argtypes = [wintypes.HWND]
+            wtsapi.WTSUnRegisterSessionNotification.restype = wintypes.BOOL
+            if not wtsapi.WTSRegisterSessionNotification(window, 0):
                 raise ctypes.WinError(ctypes.get_last_error())
             user.SetTimer.argtypes = [wintypes.HWND, ctypes.c_size_t, wintypes.UINT, ctypes.c_void_p]
             user.SetTimer.restype = ctypes.c_size_t
@@ -503,6 +523,8 @@ class WindowsCapture:
                 if self.native_touchpad:
                     device = RawDevice(0x0D, 0x05, 1, None)
                     user.RegisterRawInputDevices(ctypes.byref(device), 1, ctypes.sizeof(device))
+                if wtsapi is not None:
+                    wtsapi.WTSUnRegisterSessionNotification(window)
                 user.DestroyWindow(window)
             user.UnregisterClassW(class_name, kernel.GetModuleHandleW(None))
             self._hooks.clear()

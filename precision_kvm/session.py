@@ -166,6 +166,7 @@ class HostSession:
                 native_touchpad=self.settings.get("native_touchpad", False),
                 emergency_escape_seconds=self.settings.get("emergency_escape_seconds", 1.5),
                 mac_mode=self.settings.get("mac_mode", False),
+                lock_sync=self.settings.get("lock_sync", True),
                 peer_align=self.settings.get("peer_align", 0.5),
                 peer_span=self.settings.get("peer_span", 0.6),
                 peers=peers or None)

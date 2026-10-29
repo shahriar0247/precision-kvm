@@ -209,6 +209,25 @@ class MappingTests(unittest.TestCase):
         self.injector.close()
         self.assertFalse(self.injector._target_counts)
 
+    def test_lock_message_locks_screen_and_deactivates(self):
+        self.activate()
+        self.injector.handle({"type":"key","vk":0xA2,"down":True})
+        self.injector.handle({"type":"lock"})
+        self.assertFalse(self.injector.active)
+        self.assertEqual(self.q.events[-2]["code"],12)
+        self.assertTrue(self.q.events[-2]["down"])
+        self.assertFalse(self.q.events[-1]["down"])
+        flags = self.q.kCGEventFlagMaskControl | self.q.kCGEventFlagMaskCommand
+        self.assertEqual(self.q.events[-2]["flags"],flags)
+        count = len(self.q.events)
+        self.injector.handle({"type":"move","dx":10,"dy":0})
+        self.assertEqual(len(self.q.events),count)
+
+    def test_lock_message_works_while_inactive(self):
+        self.injector.handle({"type":"lock"})
+        self.assertEqual(self.q.events[-1]["code"],12)
+        self.assertFalse(self.q.events[-1]["down"])
+
     def test_smooth_scroll_is_tagged_and_cancelled_on_deactivate(self):
         from unittest.mock import patch
         self.injector.handle({"type":"activate","smooth_scroll":True})
