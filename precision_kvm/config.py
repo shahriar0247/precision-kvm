@@ -40,8 +40,8 @@ def load_settings() -> dict:
                 "keymap_preset": "option_cmd", "keymap": {}, "gesture_bridge": True,
                 "native_touchpad": False,
                 "clipboard_enabled": True, "clipboard_max_mb": 128,
-                "emergency_escape_seconds": 1.5, "emergency_click_count": 6,
-                "emergency_click_window": 1.2, "smooth_scroll": True,
+                "mac_mode": False,
+                "emergency_escape_seconds": 1.5, "smooth_scroll": True,
                 "smooth_scroll_ms": 60, "smooth_scroll_hz": 120,
                 "windows_home_end": True, "windows_word_nav": True}
     if path.exists():
@@ -61,14 +61,13 @@ def validate_settings(settings: dict) -> dict:
     result = dict(settings)
     for key, low, high in (("gain", 0.1, 5), ("scroll_gain", 0.1, 5),
                            ("scroll_gain_x", 0.1, 5), ("scroll_gain_y", 0.1, 5),
-                           ("emergency_escape_seconds", 0.5, 10),
-                           ("emergency_click_window", 0.3, 5)):
+                           ("emergency_escape_seconds", 0.5, 10)):
         value = float(result[key])
         if not math.isfinite(value) or not low <= value <= high:
             raise ValueError(f"{key} must be between {low} and {high}")
         result[key] = value
     for key, low, high in (("mouse_hz", 30, 1000), ("port", 1024, 65533),
-                           ("clipboard_max_mb", 1, 512), ("emergency_click_count", 4, 20)):
+                           ("clipboard_max_mb", 1, 512)):
         value = int(result[key])
         if not low <= value <= high:
             raise ValueError(f"{key} must be between {low} and {high}")

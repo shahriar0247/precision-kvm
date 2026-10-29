@@ -26,9 +26,8 @@ class WindowsCapture:
 
     def __init__(self, on_event: Callable[[dict], object], side: str = "left",
                  high_resolution_timer: bool = False, on_emergency=None,
-                 emergency_escape_seconds=1.5, emergency_click_count=6,
-                 emergency_click_window=1.2, mouse_mode="raw", gesture_bridge=True,
-                 native_touchpad=False):
+                 emergency_escape_seconds=1.5, mouse_mode="raw", gesture_bridge=True,
+                 native_touchpad=False, mac_mode=False):
         if side not in {"left", "right", "top", "bottom"}:
             raise ValueError("side must be left, right, top, or bottom")
         self.on_event = on_event
@@ -38,11 +37,12 @@ class WindowsCapture:
             raise ValueError("mouse_mode must be raw or system")
         self.mouse_mode = mouse_mode
         self.on_emergency = on_emergency or (lambda reason: None)
-        self.safety = EmergencyMonitor(emergency_escape_seconds, emergency_click_count,
-                                       emergency_click_window)
+        self.safety = EmergencyMonitor(emergency_escape_seconds)
         self.gesture_bridge = gesture_bridge
         self.gestures = GestureShortcutBridge()
         self.native_touchpad = bool(native_touchpad)
+        self.mac_mode = bool(mac_mode)
+        self._mac_alt = self._mac_ctrl = self._mac_alt_injected = False
         self.touchpads: WindowsTouchpads | None = None
         self._emergency_requested = False
         self.active = False
@@ -185,6 +185,8 @@ class WindowsCapture:
         user.GetMessageW.restype = wintypes.BOOL
         user.PeekMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT, wintypes.UINT]
         user.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+        user.keybd_event.argtypes = [ctypes.c_ubyte, ctypes.c_ubyte,
+                                     wintypes.DWORD, ctypes.c_size_t]
         self._size = (user.GetSystemMetrics(0), user.GetSystemMetrics(1))
         self._anchor = (self._size[0] // 2, self._size[1] // 2)
 
@@ -229,10 +231,6 @@ class WindowsCapture:
                     button, down = buttons[message]
                     self._buttons.add(button) if down else self._buttons.discard(button)
                     if self.active:
-                        reason = self.safety.click(button, down)
-                        if reason:
-                            self._emergency_stop(reason)
-                            return 1
                         self._emit({"type": "button", "button": button, "down": down})
                         return 1
                 if self.active and message in (0x020A, 0x020E):
@@ -278,6 +276,31 @@ class WindowsCapture:
                     self._emit({"type": "key", "vk": data.vk, "scan": data.scan,
                                 "down": down, "extended": bool(data.flags & 1)})
                     return 1
+                if self.mac_mode:
+                    vk = data.vk
+                    if vk in (0xA4, 0xA5):
+                        if down:
+                            self._mac_alt = True
+                        else:
+                            if self._mac_alt_injected:
+                                user.keybd_event(0x12, 0, 2, 0)
+                            if self._mac_ctrl:
+                                user.keybd_event(0x11, 0, 2, 0)
+                            self._mac_alt = self._mac_ctrl = self._mac_alt_injected = False
+                        return 1
+                    if self._mac_alt:
+                        if self._mac_alt_injected:
+                            return next_hook(code, message, pointer)
+                        if vk == 0x09:
+                            if self._mac_ctrl:
+                                user.keybd_event(0x11, 0, 2, 0)
+                                self._mac_ctrl = False
+                            user.keybd_event(0x12, 0, 0, 0)
+                            self._mac_alt_injected = True
+                        elif down and not self._mac_ctrl:
+                            user.keybd_event(0x11, 0, 0, 0)
+                            self._mac_ctrl = True
+                        return next_hook(code, message, pointer)
             except Exception as exc:
                 self.error = str(exc)
                 self.release()

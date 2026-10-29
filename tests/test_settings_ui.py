@@ -17,7 +17,7 @@ def test_settings_validate_remaps_and_all_sensitivity_fields():
 
 
 @pytest.mark.parametrize("key,value", [
-    ("gain", float("nan")), ("clipboard_max_mb", 513), ("emergency_click_count", 2),
+    ("gain", float("nan")), ("clipboard_max_mb", 513), ("emergency_escape_seconds", 0),
     ("scroll_mode", "unknown"), ("mouse_mode", "absolute"), ("keymap", {"A": "unknown"}),
 ])
 def test_settings_reject_unsafe_or_invalid_values(key, value):

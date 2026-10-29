@@ -3,9 +3,17 @@ from __future__ import annotations
 
 import logging
 import queue
+import subprocess
+import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, ttk
+
+try:
+    import pystray
+    from PIL import Image, ImageDraw
+except ImportError:  # Tray support is optional; windowed mode still works.
+    pystray = None
 
 from .config import identity, load_settings, local_ip, save_json, state_dir, validate_settings
 from .keymap import KEY_NAMES, MAC_KEY_NAMES, normalize_keymap
@@ -28,42 +36,92 @@ class ControlPanel:
         self.controls: list[ttk.Widget] = []
         self.variables: dict[str, tk.Variable] = {}
         self.keymap = dict(self.settings["keymap"])
-        root.title("PrecisionKVM • Input sharing")
-        root.geometry("940x880")
-        root.minsize(880, 800)
-        root.configure(bg="#101722")
+        root.title("PrecisionKVM — Input sharing")
+        root.geometry("960x900")
+        root.minsize(900, 820)
+        bg, card, edge = "#0d1420", "#141d2c", "#24344a"
+        ink, muted, accent = "#e6edf7", "#8b98ad", "#3fd3bd"
+        root.configure(bg=bg)
         style = ttk.Style(root)
         style.theme_use("clam")
-        style.configure("TFrame", background="#101722")
-        style.configure("TLabel", background="#101722", foreground="#d9e2ef", font=("Segoe UI", 11))
-        style.configure("Title.TLabel", font=("Segoe UI", 24, "bold"), foreground="white")
-        style.configure("Muted.TLabel", foreground="#91a2b9", font=("Segoe UI", 10))
-        style.configure("TButton", font=("Segoe UI", 10), padding=(12, 8))
-        style.configure("TCheckbutton", background="#101722", foreground="#d9e2ef")
-        style.configure("TNotebook", background="#101722", borderwidth=0)
-        style.configure("TNotebook.Tab", padding=(16, 12), background="#172333", foreground="#9fb0c6")
-        style.map("TNotebook.Tab", background=[("selected", "#263d54")], foreground=[("selected", "white")])
-        style.configure("TEntry", fieldbackground="#172333", foreground="#e5edf8", padding=8)
-        style.configure("TCombobox", fieldbackground="#172333", foreground="#e5edf8", padding=6)
-        style.map("TCombobox", fieldbackground=[("readonly", "#172333")], foreground=[("readonly", "#e5edf8")])
-        style.configure("Accent.TButton", background="#40cdb6", foreground="#10221f", font=("Segoe UI", 11, "bold"))
-        style.configure("Stop.TButton", background="#432b35", foreground="#ffb5bc")
-        root.option_add("*TCombobox*Listbox.background", "#172333")
-        root.option_add("*TCombobox*Listbox.foreground", "#e5edf8")
-        panel = ttk.Frame(root, padding=24)
+        style.configure(".", background=bg, foreground=ink, font=("Segoe UI", 10))
+        style.configure("TFrame", background=bg)
+        style.configure("TLabel", background=bg, foreground=ink, font=("Segoe UI", 10))
+        style.configure("Title.TLabel", font=("Segoe UI Semibold", 22), foreground="white")
+        style.configure("Muted.TLabel", foreground=muted, font=("Segoe UI", 9))
+        style.configure("TButton", font=("Segoe UI", 10), padding=(14, 8),
+                        background=card, bordercolor=edge, lightcolor=card, darkcolor=card)
+        style.map("TButton", background=[("active", "#1d2a3e"), ("pressed", "#233349")])
+        style.configure("TCheckbutton", background=bg, foreground=ink)
+        style.map("TCheckbutton", background=[("active", bg)])
+        style.configure("TNotebook", background=bg, borderwidth=0)
+        style.configure("TNotebook.Tab", padding=(18, 10), background=card,
+                        foreground=muted, font=("Segoe UI", 10))
+        style.map("TNotebook.Tab", background=[("selected", "#1e3048")],
+                  foreground=[("selected", "white")])
+        style.configure("TEntry", fieldbackground=card, foreground=ink,
+                        bordercolor=edge, lightcolor=card, darkcolor=card, padding=8)
+        style.configure("TSpinbox", fieldbackground=card, foreground=ink,
+                        bordercolor=edge, lightcolor=card, darkcolor=card, padding=6)
+        style.configure("TCombobox", fieldbackground=card, foreground=ink,
+                        bordercolor=edge, lightcolor=card, darkcolor=card, padding=6)
+        style.map("TCombobox", fieldbackground=[("readonly", card)],
+                  foreground=[("readonly", ink)])
+        style.configure("Treeview", background=card, fieldbackground=card,
+                        foreground=ink, bordercolor=edge, rowheight=26)
+        style.map("Treeview", background=[("selected", "#23475e")])
+        style.configure("Treeview.Heading", background="#1a2536", foreground=muted,
+                        font=("Segoe UI", 9, "bold"))
+        style.configure("Accent.TButton", background=accent, foreground="#08201c",
+                        font=("Segoe UI", 10, "bold"), bordercolor=accent)
+        style.map("Accent.TButton", background=[("active", "#5ce0ca"), ("pressed", "#35bba6")])
+        style.configure("Stop.TButton", background="#3a2230", foreground="#ffb5bc",
+                        bordercolor="#5a3245")
+        style.map("Stop.TButton", background=[("active", "#4a2a3c")])
+        style.configure("Status.TLabel", foreground=accent, font=("Segoe UI", 10, "bold"))
+        root.option_add("*TCombobox*Listbox.background", card)
+        root.option_add("*TCombobox*Listbox.foreground", ink)
+        root.option_add("*TCombobox*Listbox.selectBackground", "#23475e")
+        panel = ttk.Frame(root, padding=(28, 24))
         panel.pack(fill="both", expand=True)
-        ttk.Label(panel, text="PrecisionKVM", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(panel, text="Native input • Encrypted clipboard • Windows → macOS",
-                  style="Muted.TLabel").pack(anchor="w", pady=(4, 18))
+        header = ttk.Frame(panel)
+        header.pack(fill="x")
+        ttk.Label(header, text="PrecisionKVM", style="Title.TLabel").pack(side="left")
+        self.dot = tk.Canvas(header, width=14, height=14, bg=bg, highlightthickness=0)
+        self.dot.pack(side="right", pady=8)
+        self._dot_item = self.dot.create_oval(3, 3, 11, 11, fill=muted, outline="")
+        ttk.Label(panel, text="Low-latency input and clipboard sharing · Windows ⇄ macOS",
+                  style="Muted.TLabel").pack(anchor="w", pady=(4, 16))
         notebook = ttk.Notebook(panel)
         notebook.pack(fill="both", expand=True)
-        connection, inputs, keys, sharing, tweaks = (ttk.Frame(notebook, padding=18) for _ in range(5))
+        connection, inputs, keys, sharing, tweaks, logs = (ttk.Frame(notebook, padding=18) for _ in range(6))
         for frame, title in ((connection, "Connection"), (inputs, "Mouse & gestures"),
-                             (keys, "Key remapping"), (tweaks, "Mac Tweaks"), (sharing, "Clipboard & safety")):
+                             (keys, "Key remapping"), (tweaks, "Mac Tweaks"),
+                             (sharing, "Clipboard & safety"), (logs, "Activity log")):
             notebook.add(frame, text=title)
             frame.columnconfigure(1, weight=1)
-        self.canvas = tk.Canvas(connection, height=170, bg="#172333", highlightthickness=0)
+        logs.rowconfigure(0, weight=1)
+        logs.columnconfigure(0, weight=1)
+        self.log_text = tk.Text(logs, wrap="none", height=16, bg=card, fg=ink,
+                                insertbackground=ink, relief="flat",
+                                font=("Cascadia Mono", 9), state="disabled")
+        scrollbar = ttk.Scrollbar(logs, command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=scrollbar.set)
+        self.log_text.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        log_buttons = ttk.Frame(logs)
+        log_buttons.grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ttk.Button(log_buttons, text="Refresh", command=self.refresh_logs).pack(side="left")
+        ttk.Button(log_buttons, text="Open log folder",
+                   command=lambda: subprocess.Popen(["explorer", str(state_dir())])).pack(side="left", padx=8)
+        self.note(logs, 2, "Host events appear live while sharing; Refresh reloads the full log file.")
+        self.canvas = tk.Canvas(connection, height=170, bg=card, highlightthickness=0)
         self.canvas.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 18))
+        self._drag = None
+        self.canvas.tag_bind("macbox", "<ButtonPress-1>",
+                             lambda e: setattr(self, "_drag", (e.x, e.y)))
+        self.canvas.bind("<B1-Motion>", self._drag_mac)
+        self.canvas.bind("<ButtonRelease-1>", self._drop_mac)
         self.field(connection, 1, "Mac address", "peer")
         self.field(connection, 2, "Mac SSH target", "ssh_target")
         self.field(connection, 3, "Monitor position", "side", ("left", "right", "top", "bottom"))
@@ -71,8 +129,9 @@ class ControlPanel:
         pairing = ttk.Button(connection, text="Export pairing file for Mac…", command=self.export_pairing)
         pairing.grid(row=5, column=0, columnspan=2, sticky="w", pady=16)
         self.controls.append(pairing)
-        self.note(connection, 6, "Import the pairing file in the Mac app to connect securely.\n"
-                  "Edit settings anytime, then click Apply & reconnect. Keyboard delivery stays immediate.")
+        self.note(connection, 6, "Drag the MAC CLIENT box anywhere around THIS PC — it snaps to the\n"
+                  "nearest edge. Import the pairing file in the Mac app to connect securely.\n"
+                  "Edit settings anytime, then click Apply & reconnect.")
         self.field(inputs, 0, "Relative movement source", "mouse_mode", ("raw", "system"))
         self.field(inputs, 1, "Pointer sensitivity", "gain", bounds=(0.1, 5, 0.1))
         self.field(inputs, 2, "Vertical scroll sensitivity", "scroll_gain_y", bounds=(0.1, 5, 0.1))
@@ -138,13 +197,14 @@ class ControlPanel:
         self.note(sharing, 2, "New copies sync over a separate encrypted connection, keeping large copies\n"
                   "out of the input queue. Connecting does not overwrite existing clipboard data.\n"
                   "Supports text and PNG images; files and rich HTML are not included.")
-        self.field(sharing, 3, "Hold physical Esc to STOP (seconds)", "emergency_escape_seconds", bounds=(0.5, 10, 0.1))
-        self.field(sharing, 4, "Rapid left-click count to STOP", "emergency_click_count", bounds=(4, 20, 1))
-        self.field(sharing, 5, "Rapid-click time window (seconds)", "emergency_click_window", bounds=(0.3, 5, 0.1))
-        self.note(sharing, 6, "Defaults: hold Esc 1.5 seconds OR left-click 6 times within 1.2 seconds.\n"
-                  "These STOP the PC server and clipboard sharing, restore local input and\n"
-                  "prevent edge re-entry until you explicitly start the host again.\n"
-                  "Ctrl+Alt+F12 returns locally without stopping the server.")
+        self.check(sharing, 3, "Mac-style shortcuts on this PC — Alt acts like Command "
+                  "(Alt+C copy, Alt+F find); Alt+Tab stays unchanged", "mac_mode")
+        self.field(sharing, 4, "Hold physical Esc to STOP (seconds)", "emergency_escape_seconds", bounds=(0.5, 10, 0.1))
+        self.note(sharing, 5, "Hold Esc for the chosen time to STOP the PC server and clipboard\n"
+                  "sharing, restore local input and prevent edge re-entry until you start\n"
+                  "the host again. Ctrl+Alt+F12 returns locally without stopping.\n\n"
+                  "Mac-style shortcuts apply while input is local; over the KVM Alt already\n"
+                  "maps to Command. In terminals Alt+C behaves exactly like Ctrl+C.")
         buttons = ttk.Frame(panel)
         buttons.pack(fill="x", pady=(18, 10))
         self.start_button = ttk.Button(buttons, text="Start sharing", style="Accent.TButton", command=self.start)
@@ -255,11 +315,47 @@ class ControlPanel:
         side = self.variables["side"].get()
         dx, dy = {"left": (-190, 0), "right": (190, 0), "top": (0, -75), "bottom": (0, 75)}[side]
         w, h = (140, 54) if dy else (160, 90)
-        canvas.create_line(cx-dx/2, cy-dy/2, cx+dx/2, cy+dy/2, fill="#4bc6b2", width=2)
-        for x, y, label, color in ((cx-dx/2, cy-dy/2, "THIS PC", "#365376"),
-                                   (cx+dx/2, cy+dy/2, "MAC CLIENT", "#237c73")):
-            canvas.create_rectangle(x-w/2, y-h/2, x+w/2, y+h/2, fill=color, outline="#6d8aa6")
-            canvas.create_text(x, y, text=label, fill="white", font=("Segoe UI", 11, "bold"))
+        canvas.create_line(cx-dx/2, cy-dy/2, cx+dx/2, cy+dy/2, fill="#3fd3bd", width=2)
+        for x, y, label, color, tag in ((cx-dx/2, cy-dy/2, "THIS PC", "#2b4a75", "pcbox"),
+                                        (cx+dx/2, cy+dy/2, "MAC CLIENT", "#1f7a6c", "macbox")):
+            canvas.create_rectangle(x-w/2, y-h/2, x+w/2, y+h/2, fill=color,
+                                    outline="#4d6a8c", width=2, tags=tag)
+            canvas.create_text(x, y, text=label, fill="white",
+                               font=("Segoe UI", 10, "bold"), tags=tag)
+        canvas.itemconfig("macbox", cursor="fleur")
+
+    def _drag_mac(self, event):
+        if self._drag is None:
+            return
+        dx, dy = event.x - self._drag[0], event.y - self._drag[1]
+        if self.canvas.find_withtag("macbox"):
+            self.canvas.move("macbox", dx, dy)
+            self._drag = (event.x, event.y)
+
+    def _drop_mac(self, _event):
+        items = self.canvas.find_withtag("macbox")
+        self._drag = None
+        if not items:
+            return
+        x0, y0, x1, y1 = self.canvas.bbox(items[0])
+        mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+        cx, cy = max(self.canvas.winfo_width(), 700) / 2, 85
+        ox, oy = mx - cx, my - cy
+        side = ("left" if ox < 0 else "right") if abs(ox) > abs(oy) else ("top" if oy < 0 else "bottom")
+        options = DISPLAY_OPTIONS.get("side", {})
+        self.variables["side"].set(options.get(side, side))
+
+    def refresh_logs(self):
+        try:
+            lines = (state_dir() / "host.log").read_text(encoding="utf-8",
+                                                         errors="replace").splitlines()[-400:]
+        except OSError:
+            lines = []
+        self.log_text.configure(state="normal")
+        self.log_text.delete("1.0", "end")
+        self.log_text.insert("end", "\n".join(lines) or "No log entries yet.")
+        self.log_text.configure(state="disabled")
+        self.log_text.see("end")
 
     def set_running(self, running):
         self.start_button.configure(text="Apply & reconnect" if running else "Start sharing")
@@ -293,6 +389,11 @@ class ControlPanel:
 
     def report_status(self, message):
         logging.info(message)
+        self._append_log(message)
+        if message.startswith("Connected"):
+            self.dot.itemconfigure(self._dot_item, fill="#3fd3bd")
+        elif any(word in message for word in ("error", "Error", "rejected", "Emergency", "stopped")):
+            self.dot.itemconfigure(self._dot_item, fill="#ff7a8a")
         try:
             self.messages.put_nowait(message)
         except queue.Full:
@@ -301,6 +402,15 @@ class ControlPanel:
                 self.messages.put_nowait(message)
             except (queue.Empty, queue.Full):
                 pass
+
+    def _append_log(self, line):
+        try:
+            self.log_text.configure(state="normal")
+            self.log_text.insert("end", line + "\n")
+            self.log_text.configure(state="disabled")
+            self.log_text.see("end")
+        except tk.TclError:
+            pass
 
     def poll(self):
         while not self.messages.empty():
@@ -315,6 +425,49 @@ class ControlPanel:
         self.root.after(100, self.poll)
 
     def close(self):
+        if pystray is None or self._closing:
+            self.stop()
+            self.root.destroy()
+            return
+        self._hide_to_tray()
+
+    _closing = False
+
+    def _tray_image(self):
+        image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        draw.rounded_rectangle((4, 4, 60, 60), radius=14, fill="#141d2c", outline="#3fd3bd", width=3)
+        draw.rectangle((14, 18, 38, 34), fill="#2b4a75")
+        draw.rectangle((40, 22, 52, 30), fill="#1f7a6c")
+        draw.line((28, 40, 28, 50), fill="#3fd3bd", width=3)
+        return image
+
+    def _hide_to_tray(self):
+        self.root.withdraw()
+        if self._tray:
+            return
+        menu = pystray.Menu(
+            pystray.MenuItem("Open PrecisionKVM",
+                             lambda _i, _e: self.root.after(0, self._restore), default=True),
+            pystray.MenuItem("Quit", lambda _i, _e: self.root.after(0, self._quit)))
+        self._tray = pystray.Icon("precisionkvm", self._tray_image(),
+                                  "PrecisionKVM — input sharing", menu)
+        threading.Thread(target=self._tray.run, daemon=True, name="kvm-tray").start()
+
+    _tray = None
+
+    def _restore(self):
+        if self._tray:
+            self._tray.stop()
+            self._tray = None
+        self.root.deiconify()
+        self.root.lift()
+
+    def _quit(self):
+        self._closing = True
+        if self._tray:
+            self._tray.stop()
+            self._tray = None
         self.stop()
         self.root.destroy()
 

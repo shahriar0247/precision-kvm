@@ -165,8 +165,7 @@ class HostSession:
                         gesture_bridge=self.settings.get("gesture_bridge", True),
                         native_touchpad=self.settings.get("native_touchpad", False),
                         emergency_escape_seconds=self.settings.get("emergency_escape_seconds", 1.5),
-                        emergency_click_count=self.settings.get("emergency_click_count", 6),
-                        emergency_click_window=self.settings.get("emergency_click_window", 1.2))
+                        mac_mode=self.settings.get("mac_mode", False))
                     self.sender = Sender(self.channel, self.buffer)
                     writer = threading.Thread(target=self._writer, daemon=True, name="kvm-writer")
                     writer.start()

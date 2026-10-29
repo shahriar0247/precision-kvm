@@ -30,19 +30,6 @@ def test_short_escape_and_repeats_preserve_original_hold_time():
     assert monitor.key(0x1B, False, 42) == "Escape-hold emergency stop"
 
 
-def test_six_rapid_left_clicks_stop_but_double_clicks_and_slow_clicks_do_not():
-    monitor = EmergencyMonitor()
-    for index in range(5):
-        assert monitor.click("left", True, index * 0.15) is None
-        assert monitor.click("left", False, index * 0.15 + .01) is None
-    assert monitor.click("left", True, .75) == "Rapid-click emergency stop"
-    assert monitor.click("left", True, .8) is None
-    monitor.reset()
-    for index in range(20):
-        assert monitor.click("left", True, index * .5) is None
-    assert monitor.click("right", True, 11) is None
-
-
 def test_emergency_stop_is_latched_disarmed_and_returns_local_before_callback():
     calls = []
     completed = threading.Event()
@@ -65,7 +52,6 @@ def test_emergency_stop_is_latched_disarmed_and_returns_local_before_callback():
 
 @pytest.mark.parametrize("kwargs", [
     {"escape_seconds": 0}, {"escape_seconds": float("nan")},
-    {"click_count": 1}, {"click_count": 3.5}, {"click_window": float("inf")},
 ])
 def test_invalid_safety_thresholds_rejected(kwargs):
     with pytest.raises(ValueError):
