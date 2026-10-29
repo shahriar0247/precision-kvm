@@ -283,7 +283,7 @@ class FletPanel:
                 bgcolor=PC_BLUE, border=ft.Border.all(1.5, "#4d6a8c"),
                 border_radius=6,
                 content=ft.Text("THIS PC", size=10, weight=ft.FontWeight.W_700),
-                alignment=ft.alignment.center))
+                alignment=ft.Alignment.CENTER))
         for name, rect in self.peers.items():
             box = ft.Container(
                 left=rect[0] * scale + ox, top=rect[1] * scale + oy,
@@ -291,7 +291,7 @@ class FletPanel:
                 bgcolor=MAC_GREEN, border=ft.Border.all(1.5, ACCENT),
                 border_radius=6,
                 content=ft.Text(name.upper(), size=10, weight=ft.FontWeight.W_700),
-                alignment=ft.alignment.center)
+                alignment=ft.Alignment.CENTER)
             detector = ft.GestureDetector(
                 content=box, drag_interval=10,
                 on_pan_start=lambda e, n=name: self._pan_start(n),
@@ -528,4 +528,4 @@ class FletPanel:
         self.stop()
         if self._tray:
             self._tray.stop()
-        self.page.window.destroy()
+        self.page.run_task(self.page.window.destroy)
