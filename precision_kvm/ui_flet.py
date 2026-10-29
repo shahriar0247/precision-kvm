@@ -161,7 +161,7 @@ class FletPanel:
     def _check(self, label, key):
         control = self.ft.Switch(label=label, value=bool(self.settings.get(key, False)),
                                  active_color=ACCENT, label_position=self.ft.LabelPosition.LEFT,
-                                 label_style=self.ft.TextStyle(size=13))
+                                 label_text_style=self.ft.TextStyle(size=13))
         self._fields[key] = ("check", control)
         return control
 
