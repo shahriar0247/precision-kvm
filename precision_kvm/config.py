@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path
 import secrets
 import socket
@@ -41,6 +42,8 @@ def load_settings() -> dict:
                 "native_touchpad": False,
                 "clipboard_enabled": True, "clipboard_max_mb": 128,
                 "mac_mode": False, "peer_align": 0.5, "peer_span": 0.6,
+                "peers": {}, "peer_size": [1920, 1080],
+                "tls": True, "discovery": True, "ui": "qt",
                 "emergency_escape_seconds": 1.5, "smooth_scroll": True,
                 "smooth_scroll_ms": 60, "smooth_scroll_hz": 120,
                 "windows_home_end": True, "windows_word_nav": True}
@@ -76,9 +79,30 @@ def validate_settings(settings: dict) -> dict:
     for key, allowed in (("side", ("left", "right", "top", "bottom")),
                          ("mouse_mode", ("raw", "system")),
                          ("scroll_mode", ("pixel", "line")),
+                         ("ui", ("qt", "flet", "tk")),
                          ("keymap_preset", ("native", "ctrl_cmd", "mac_layout", "option_cmd"))):
         if result[key] not in allowed:
             raise ValueError(f"Invalid {key}")
+    for key in ("tls", "discovery"):
+        result[key] = bool(result[key])
+    peers = {}
+    for name, rect in (result.get("peers") or {}).items():
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", str(name)) or not isinstance(rect, dict):
+            raise ValueError("Invalid peer layout entry")
+        values = []
+        for field in ("x", "y", "w", "h"):
+            value = int(rect[field])
+            if not -32768 <= value <= 32768:
+                raise ValueError("Peer layout is out of range")
+            values.append(value)
+        if not 64 <= values[2] <= 16384 or not 64 <= values[3] <= 16384:
+            raise ValueError("Peer display size is out of range")
+        peers[str(name)] = {"x": values[0], "y": values[1], "w": values[2], "h": values[3]}
+    result["peers"] = peers
+    size = [int(v) for v in result.get("peer_size", [1920, 1080])[:2]]
+    if len(size) != 2 or not all(64 <= v <= 16384 for v in size):
+        raise ValueError("peer_size is invalid")
+    result["peer_size"] = size
     if not str(result["peer"]).strip():
         raise ValueError("Enter the Mac address")
     result["keymap"] = normalize_keymap(result["keymap"])

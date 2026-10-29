@@ -3,15 +3,18 @@ from __future__ import annotations
 
 import socket
 import re
+import ssl
 import subprocess
 import threading
 import time
 from typing import Callable, TYPE_CHECKING
 
+from . import __version__
 from .config import identity, state_dir
 from .clipboard import ClipboardClient, ClipboardServer
-from .transport import (BackpressureError, EventBuffer, FramedSocket, ProtocolError,
-                        Receiver, Sender, TLSListener, authenticate)
+from .transport import (BackpressureError, EventBuffer, FramedSocket, PlainListener,
+                        ProtocolError, Receiver, Sender, TLSListener, authenticate,
+                        connect, fetch_fingerprint)
 
 if TYPE_CHECKING:
     from .windows import WindowsCapture
@@ -33,6 +36,7 @@ class HostSession:
         self.remote_process: subprocess.Popen | None = None
         self._remote_lock = threading.Lock()
         self.clipboard: ClipboardServer | None = None
+        self.advertiser = None
         self.emergency_reason = ""
 
     def start(self):
@@ -50,6 +54,8 @@ class HostSession:
             self.capture.stop()
         if self.clipboard:
             self.clipboard.stop()
+        if self.advertiser:
+            self.advertiser.stop()
         if self.listener:
             self.listener.close()
         if self.thread and self.thread is not threading.current_thread():
@@ -132,13 +138,27 @@ class HostSession:
     def _run(self):
         from .windows import WindowsCapture
         try:
-            cert, key, token, _ = identity()
-            self.listener = TLSListener(str(cert), str(key), port=int(self.settings["port"]))
+            cert, key, token, fingerprint = identity()
+            tls = bool(self.settings.get("tls", True))
+            listener_t = TLSListener if tls else PlainListener
+            self.listener = listener_t(str(cert), str(key), port=int(self.settings["port"]))
+            if self.settings.get("discovery", True):
+                from .discovery import Advertiser
+                self.advertiser = Advertiser(self.settings["port"],
+                    {"tls": int(tls), "fp": fingerprint, "ver": __version__})
+                try:
+                    self.advertiser.start()
+                except Exception as exc:
+                    self.status(f"Network discovery unavailable: {type(exc).__name__}")
+                    self.advertiser = None
             if self.settings.get("clipboard_enabled", False):
-                self.clipboard = ClipboardServer(cert, key, token, port=int(self.settings["port"]) + 2,
+                self.clipboard = ClipboardServer(cert if tls else None, key if tls else None,
+                    token, port=int(self.settings["port"]) + 2,
                     max_bytes=int(self.settings.get("clipboard_max_mb", 128)) * 1024 * 1024,
                     status=lambda message: self.status(f"Clipboard: {message}"))
                 self.clipboard.start()
+            peers = {name: (rect["x"], rect["y"], rect["w"], rect["h"])
+                     for name, rect in (self.settings.get("peers") or {}).items()}
             self.capture = WindowsCapture(self._emit, side=self.settings["side"],
                 high_resolution_timer=True, on_emergency=self.emergency_stop,
                 mouse_mode=self.settings.get("mouse_mode", "raw"),
@@ -147,7 +167,8 @@ class HostSession:
                 emergency_escape_seconds=self.settings.get("emergency_escape_seconds", 1.5),
                 mac_mode=self.settings.get("mac_mode", False),
                 peer_align=self.settings.get("peer_align", 0.5),
-                peer_span=self.settings.get("peer_span", 0.6))
+                peer_span=self.settings.get("peer_span", 0.6),
+                peers=peers or None)
             self.capture.start()
             self.ready.set()
             self.status("Waiting for paired Mac; local input remains active")
@@ -198,6 +219,9 @@ class HostSession:
                 self.capture = None
             if self.clipboard:
                 self.clipboard.stop()
+            if self.advertiser:
+                self.advertiser.stop()
+                self.advertiser = None
             if self.listener:
                 self.listener.close()
 
@@ -230,6 +254,8 @@ def run_client_forever(config: dict, stop_event=None, status=print):
             clipboard.start()
         while not stop_event.is_set():
             started = time.monotonic()
+            if config.get("auto"):
+                _resolve_host(config, status)
             try:
                 run_client(config, connect_timeout=0.8, stop_event=stop_event, status=status)
             except (OSError, EOFError, ProtocolError, BackpressureError) as exc:
@@ -241,9 +267,23 @@ def run_client_forever(config: dict, stop_event=None, status=print):
             clipboard.stop()
 
 
+def _resolve_host(config: dict, status) -> None:
+    """Fill host/port from mDNS when auto-discovery is enabled."""
+    try:
+        from .discovery import browse
+        services = browse(1.5)
+    except Exception:
+        return
+    if not services:
+        return
+    service = services[0]
+    config["host"], config["port"] = service["host"], service["port"]
+    config["tls"] = service["tls"]
+    status(f"Discovered {service['name']} at {service['host']}:{service['port']}")
+
+
 def run_client(config: dict, connect_timeout=3, stop_event=None, status=print):
     from .mac import MacInjector
-    from .transport import connect_tls
 
     if not MacInjector.accessibility_available(prompt=True):
         raise RuntimeError("Grant Accessibility access to this Python executable/Terminal in "
@@ -255,8 +295,20 @@ def run_client(config: dict, connect_timeout=3, stop_event=None, status=print):
     sender = None
     workers = []
     try:
-        channel = connect_tls(config["host"], int(config["port"]), config["fingerprint"],
+        tls = bool(config.get("tls", True))
+        try:
+            channel = connect(config["host"], int(config["port"]),
+                              config.get("fingerprint", ""), tls=tls,
                               timeout=connect_timeout)
+        except ssl.SSLError:
+            approve = config.get("approve")
+            if not approve:
+                raise
+            actual = fetch_fingerprint(config["host"], int(config["port"]), connect_timeout)
+            if not approve(config.get("fingerprint") or None, actual):
+                raise ProtocolError("Server certificate rejected")
+            channel = connect(config["host"], int(config["port"]), actual,
+                              tls=tls, timeout=connect_timeout)
         authenticate(channel, config["token"], server=False)
         if stop_event is not None and stop_event.is_set():
             return

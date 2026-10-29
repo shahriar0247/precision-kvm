@@ -501,7 +501,24 @@ class ControlPanel:
         self.root.destroy()
 
 
-def run_ui(start=False):
+def run_ui(start=False, ui=None):
+    ui = ui or load_settings().get("ui", "qt")
+    if ui == "flet":
+        try:
+            from .ui_flet import run_ui as flet_ui
+            return flet_ui(start)
+        except ImportError:
+            pass
+    if ui == "qt":
+        try:
+            from .ui_qt import run_ui as qt_ui
+            return qt_ui(start)
+        except ImportError:
+            pass
+    return run_tk(start)
+
+
+def run_tk(start=False):
     logging.basicConfig(filename=str(state_dir() / "host.log"), level=logging.INFO,
                         format="%(asctime)s %(message)s")
     root = tk.Tk()

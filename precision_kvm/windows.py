@@ -12,6 +12,7 @@ import threading
 import time
 from typing import Any, Callable
 
+from . import geometry
 from .gestures import GestureShortcutBridge
 from .safety import EmergencyMonitor
 from .touchpad import WindowsTouchpads
@@ -45,7 +46,7 @@ class WindowsCapture:
                  high_resolution_timer: bool = False, on_emergency=None,
                  emergency_escape_seconds=1.5, mouse_mode="raw", gesture_bridge=True,
                  native_touchpad=False, mac_mode=False,
-                 peer_align=0.5, peer_span=0.6):
+                 peer_align=0.5, peer_span=0.6, peers=None):
         if side not in {"left", "right", "top", "bottom"}:
             raise ValueError("side must be left, right, top, or bottom")
         self.on_event = on_event
@@ -62,6 +63,10 @@ class WindowsCapture:
         self.mac_mode = bool(mac_mode)
         self.peer_align = float(peer_align)
         self.peer_span = float(peer_span)
+        self.peers = dict(peers) if peers else None
+        self._peer_rect: tuple | None = None
+        self._monitors: list | None = None
+        self._hit = None
         self._mac_alt = self._mac_ctrl = self._mac_alt_injected = False
         self.touchpads: WindowsTouchpads | None = None
         self._emergency_requested = False
@@ -142,19 +147,17 @@ class WindowsCapture:
         threading.Thread(target=self.on_emergency, args=(reason,), daemon=True,
                          name="kvm-emergency-stop").start()
 
+    def _peer_map(self, mons):
+        if self.peers:
+            return {name: tuple(rect) for name, rect in self.peers.items()}
+        return {"peer": geometry.default_peer(mons, self.side,
+                                              self.peer_align, self.peer_span)}
+
     def _return_point(self):
-        width, height = self._size
-        x = min(width - 2, max(1, round(self._entry_x * (width - 1))))
-        y = min(height - 2, max(1, round(self._entry_y * (height - 1))))
-        if self.side == "left":
-            x = 2
-        elif self.side == "right":
-            x = width - 3
-        elif self.side == "top":
-            y = 2
-        else:
-            y = height - 3
-        return x, y
+        mons = self._monitors or [(0, 0, *self._size)]
+        peers = self._peer_map(mons)
+        peer = self._peer_rect if self._peer_rect in peers.values() else next(iter(peers.values()))
+        return geometry.return_point(mons, peer, self._entry_x, self._entry_y)
 
     def _emit(self, event):
         try:
@@ -168,16 +171,9 @@ class WindowsCapture:
             return False
 
     def _at_edge(self, x, y):
-        width, height = self._size
-        on_edge = {"left": x <= 0, "right": x >= width - 1,
-                   "top": y <= 0, "bottom": y >= height - 1}[self.side]
-        if not on_edge:
-            return False
-        # Crossing is limited to where the peer screen overlaps this edge.
-        span = self._size[1] if self.side in ("left", "right") else self._size[0]
-        t = (y if self.side in ("left", "right") else x) / max(1, span - 1)
-        half = self.peer_span / 2
-        return self.peer_align - half <= t <= self.peer_align + half
+        mons = self._monitors or [(0, 0, *self._size)]
+        self._hit = geometry.hit(mons, self._peer_map(mons), x, y)
+        return self._hit is not None
 
     def _run(self):
         user = ctypes.WinDLL("user32", use_last_error=True)
@@ -215,7 +211,9 @@ class WindowsCapture:
         user.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
         user.keybd_event.argtypes = [ctypes.c_ubyte, ctypes.c_ubyte,
                                      wintypes.DWORD, ctypes.c_size_t]
-        self._size = (user.GetSystemMetrics(0), user.GetSystemMetrics(1))
+        self._monitors = geometry.monitors()
+        bounds = geometry.union_bounds(self._monitors)
+        self._size = (bounds[2], bounds[3])
         self._anchor = (self._size[0] // 2, self._size[1] // 2)
 
         def next_hook(code, message, pointer):
@@ -235,11 +233,15 @@ class WindowsCapture:
                         if (not self._stopping.is_set() and self._at_edge(x, y)
                                 and self.peer_connected
                                 and not self._keys and not self._buttons):
-                            self._entry_x = x / max(1, self._size[0] - 1)
-                            self._entry_y = y / max(1, self._size[1] - 1)
+                            name, side, nx, ny = self._hit
+                            self._peer_rect = self._peer_map(self._monitors)[name]
+                            self._entry_x, self._entry_y = nx, ny
+                            mon = next((m for m in self._monitors
+                                        if geometry.inside(m, x, y)), self._monitors[0])
+                            self._anchor = (mon[0] + mon[2] // 2, mon[1] + mon[3] // 2)
                             self.active = True
-                            if self._emit({"type": "activate", "normalized_y": self._entry_y,
-                                           "normalized_x": self._entry_x, "side": self.side}):
+                            if self._emit({"type": "activate", "normalized_y": ny,
+                                           "normalized_x": nx, "side": side}):
                                 user.SetCursorPos(*self._anchor)
                                 return 1
                     else:

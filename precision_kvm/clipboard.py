@@ -20,7 +20,8 @@ import time
 import uuid
 from typing import Callable
 
-from .transport import FramedSocket, ProtocolError, TLSListener, authenticate, connect_tls
+from .transport import (FramedSocket, PlainListener, ProtocolError, TLSListener,
+                        authenticate, connect)
 
 DEFAULT_MAX_BYTES = 128 * 1024 * 1024
 CHUNK_BYTES = 32 * 1024
@@ -546,7 +547,8 @@ class ClipboardServer:
         backend = None
         try:
             backend = self.backend if self.backend is not None else native_backend()
-            self.listener = TLSListener(self.cert, self.key, port=self.port)
+            listener_t = TLSListener if self.cert and self.key else PlainListener
+            self.listener = listener_t(self.cert, self.key, port=self.port)
             while not self.stopped.is_set():
                 try:
                     self.channel = self.listener.accept()
@@ -603,9 +605,10 @@ class ClipboardClient:
             while not self.stopped.is_set():
                 started = time.monotonic()
                 try:
-                    self.channel = connect_tls(self.config["host"],
+                    self.channel = connect(self.config["host"],
                         int(self.config.get("clipboard_port", int(self.config["port"]) + 2)),
-                        self.config["fingerprint"], timeout=0.8)
+                        self.config.get("fingerprint", ""),
+                        tls=bool(self.config.get("tls", True)), timeout=0.8)
                     authenticate(self.channel, self.config["token"], server=False)
                     effective = negotiate_limit(self.channel, self.max_bytes, server=False)
                     self.status(f"Clipboard connected (limit {effective / 1024 ** 2:g} MiB)")

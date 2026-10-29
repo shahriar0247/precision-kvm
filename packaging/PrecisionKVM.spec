@@ -27,6 +27,15 @@ if sys.platform == "darwin":
         hiddenimports += package_hidden
 else:
     hiddenimports.append("tkinter")
+    hiddenimports += ["zeroconf", "precision_kvm.ui_qt", "precision_kvm.ui_flet"]
+    for package in ("flet", "PySide6"):
+        try:
+            package_datas, package_binaries, package_hidden = collect_all(package)
+            datas += package_datas
+            binaries += package_binaries
+            hiddenimports += package_hidden
+        except Exception:
+            pass
 
 analysis = Analysis(
     [str(root / "packaging" / "launcher.py")],
@@ -57,10 +66,42 @@ executable = EXE(
     entitlements_file=None,
     icon=str(icon_path),
 )
+executables = [executable]
+extra_binaries = []
+extra_datas = []
+if sys.platform == "win32":
+    analysis_flet = Analysis(
+        [str(root / "packaging" / "launcher_flet.py")],
+        pathex=[str(root)],
+        binaries=[],
+        datas=[],
+        hiddenimports=hiddenimports,
+        hookspath=[],
+        runtime_hooks=[],
+        excludes=excludes,
+        noarchive=False,
+    )
+    archive_flet = PYZ(analysis_flet.pure)
+    executables.append(EXE(
+        archive_flet,
+        analysis_flet.scripts,
+        [],
+        exclude_binaries=True,
+        name="PrecisionKVM-Flet",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        console=False,
+        argv_emulation=False,
+        icon=str(icon_path),
+    ))
+all_binaries = analysis.binaries + (analysis_flet.binaries if sys.platform == "win32" else [])
+all_datas = analysis.datas + (analysis_flet.datas if sys.platform == "win32" else [])
 collection = COLLECT(
-    executable,
-    analysis.binaries,
-    analysis.datas,
+    *executables,
+    all_binaries,
+    all_datas,
     strip=False,
     upx=False,
     name="PrecisionKVM",

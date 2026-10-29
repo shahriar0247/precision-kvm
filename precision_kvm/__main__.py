@@ -20,6 +20,8 @@ def main():
     commands = parser.add_subparsers(dest="command")
     gui = commands.add_parser("gui", help="Open Windows host control panel")
     gui.add_argument("--start", action="store_true", help="Start sharing and connect the prepared Mac")
+    gui.add_argument("--ui", choices=("qt", "flet", "tk"),
+                   help="Control panel framework (default: saved setting)")
     client = commands.add_parser("client", help="Run reconnecting macOS client in a terminal")
     client.add_argument("--config", type=Path, required=True)
     client_gui = commands.add_parser("client-gui", help="Open native Mac client and tweaks panel")
@@ -35,7 +37,7 @@ def main():
         if sys.platform != "win32":
             parser.error("The sharing host UI currently requires Windows; use client-gui on macOS")
         from .ui import run_ui
-        run_ui(start=getattr(args, "start", False))
+        run_ui(start=getattr(args, "start", False), ui=getattr(args, "ui", None))
     elif command in ("client", "client-gui"):
         if sys.platform != "darwin":
             parser.error("The input client requires macOS")

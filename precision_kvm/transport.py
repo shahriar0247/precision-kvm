@@ -188,6 +188,36 @@ def connect_tls(host: str, port: int, fingerprint: str, timeout: float = 3) -> F
         raise
 
 
+def connect_plain(host: str, port: int, timeout: float = 3) -> FramedSocket:
+    """Cleartext channel for trusted networks; the pairing token still applies."""
+    return FramedSocket(socket.create_connection((host, port), timeout))
+
+
+def connect(host: str, port: int, fingerprint: str = "", tls: bool = True,
+            timeout: float = 3) -> FramedSocket:
+    if tls:
+        return connect_tls(host, port, fingerprint, timeout)
+    return connect_plain(host, port, timeout)
+
+
+def fetch_fingerprint(host: str, port: int, timeout: float = 3) -> str:
+    """Read the server certificate fingerprint without pinning — the caller
+    decides whether to trust it."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    raw = socket.create_connection((host, port), timeout)
+    try:
+        with context.wrap_socket(raw, server_hostname=host) as secured:
+            certificate = secured.getpeercert(binary_form=True)
+            if not certificate:
+                raise ssl.SSLError("Server did not supply a certificate")
+            return hashlib.sha256(certificate).hexdigest()
+    finally:
+        raw.close()
+
+
 class TLSListener:
     def __init__(self, certfile: str, keyfile: str, host: str = "0.0.0.0", port: int = 24819):
         self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -204,6 +234,32 @@ class TLSListener:
         raw.settimeout(3)
         try:
             return FramedSocket(self.context.wrap_socket(raw, server_side=True))
+        except BaseException:
+            raw.close()
+            raise
+
+    def close(self) -> None:
+        self.sock.close()
+
+
+class PlainListener:
+    """Cleartext accept loop for trusted networks; pairing auth still applies.
+
+    Shares TLSListener's signature so hosts can swap transport by setting.
+    """
+    def __init__(self, _certfile: str | None = None, _keyfile: str | None = None,
+                 host: str = "0.0.0.0", port: int = 24819):
+        self.sock = socket.socket()
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind((host, port))
+        self.sock.listen(2)
+        self.sock.settimeout(1)
+
+    def accept(self) -> FramedSocket:
+        raw, _ = self.sock.accept()
+        raw.settimeout(3)
+        try:
+            return FramedSocket(raw)
         except BaseException:
             raw.close()
             raise
