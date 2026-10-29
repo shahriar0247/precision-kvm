@@ -16,6 +16,7 @@ except ImportError:  # Tray support is optional; windowed mode still works.
     pystray = None
 
 from .config import identity, load_settings, local_ip, save_json, state_dir, validate_settings
+from . import geometry
 from .keymap import KEY_NAMES, MAC_KEY_NAMES, normalize_keymap
 from .session import HostSession
 
@@ -126,7 +127,7 @@ class ControlPanel:
         self.variables["peer_align"].trace_add("write", lambda *args: self.draw_layout())
         self.field(connection, 1, "Mac address", "peer")
         self.field(connection, 2, "Mac SSH target", "ssh_target")
-        self.field(connection, 3, "Monitor position", "side", ("left", "right", "top", "bottom"))
+        self.field(connection, 3, "Monitor position", "side", ("left", "right"))
         self.field(connection, 4, "Mouse update limit (Hz)", "mouse_hz", ("120", "144", "240", "500", "1000"))
         pairing = ttk.Button(connection, text="Export pairing file for Mac…", command=self.export_pairing)
         pairing.grid(row=5, column=0, columnspan=2, sticky="w", pady=16)
@@ -278,6 +279,11 @@ class ControlPanel:
         settings.update({name: value.get() for name, value in self.variables.items()})
         for name, options in DISPLAY_OPTIONS.items():
             settings[name] = {label: value for value, label in options.items()}.get(settings[name], settings[name])
+        side = settings.get("side", "left")
+        mons = geometry.monitors() or [(0, 0, 1920, 1080)]
+        w, h = (int(v) for v in settings.get("peer_size", [1920, 1080]))
+        rect = geometry.snap_side(geometry.default_peer(mons, side, 0.5, 1.0)[:2] + (w, h), mons)
+        settings["peers"] = {"mac": dict(zip("xywh", rect))}
         return validate_settings(settings)
 
     def toggle_modifier_layout(self):
@@ -366,15 +372,10 @@ class ControlPanel:
         if abs(ox) < 45 and abs(oy) < 35:
             self.draw_layout()
             return
-        side = ("left" if ox < 0 else "right") if abs(ox) > abs(oy) else ("top" if oy < 0 else "bottom")
+        side = "left" if ox < 0 else "right"
         options = DISPLAY_OPTIONS.get("side", {})
         self.variables["side"].set(options.get(side, side))
-        dx, dy = {"left": (-190, 0), "right": (190, 0), "top": (0, -75), "bottom": (0, 75)}[side]
-        room = 110 if dy else 300
-        pc = (cy - dy / 2) if dy else (cx - dx / 2)
-        m = my if dy else mx
-        align = min(1.0, max(0.0, 0.5 + (m - pc) / room))
-        self.variables["peer_align"].set(round(align, 3))
+        self.variables["peer_align"].set(0.5)
 
     def refresh_logs(self):
         try:

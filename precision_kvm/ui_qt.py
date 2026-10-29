@@ -203,11 +203,9 @@ class MonitorCanvas:
         scale, ox, oy = self._scale, *self._origin
         virtual = (round((rect.x() - ox) / scale), round((rect.y() - oy) / scale),
                    round(rect.width() / scale), round(rect.height() / scale))
-        snapped = geometry.snap(virtual, self.mons,
-                                threshold=max(8, round(16 / scale)))
-        if snapped != virtual:
-            item.setPos(snapped[0] * scale + ox, snapped[1] * scale + oy)
-            self.position_label(item)
+        snapped = geometry.snap_side(virtual, self.mons)
+        item.setPos(snapped[0] * scale + ox, snapped[1] * scale + oy)
+        self.position_label(item)
 
     def commit(self):
         scale, ox, oy = self._scale, *self._origin
@@ -430,8 +428,8 @@ class Panel:
         layout.addWidget(view, 1)
         self.canvas = MonitorCanvas(self)
         self.canvas.attach(view)
-        hint = QLabel("Drag MAC anywhere — it snaps flush to any monitor edge or "
-                      "corner. The glowing segment is where the cursor crosses.")
+        hint = QLabel("Drag MAC left or right of THIS PC — it snaps to that edge. "
+                      "The glowing segment is where the cursor crosses.")
         hint.setObjectName("subtitle")
         hint.setWordWrap(True)
         layout.addWidget(hint)

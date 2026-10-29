@@ -144,6 +144,16 @@ def return_point(mons: list[Rect], peer: Rect, nx: float, ny: float):
     return x, y
 
 
+def snap_side(peer: Rect, mons: list[Rect]) -> Rect:
+    """Drop a peer flush against the left or right union edge, vertically
+    centred — whichever side the peer's centre is closer to."""
+    px, py, pw, ph = peer
+    bx, by, bw, bh = union_bounds(mons)
+    cx = px + pw / 2
+    x = bx - pw if cx < bx + bw / 2 else bx + bw
+    return x, by + (bh - ph) // 2, pw, ph
+
+
 def snap(peer: Rect, mons: list[Rect], threshold: int) -> Rect:
     """Magnetic snap like the OS display settings: pull a peer edge flush."""
     px, py, pw, ph = peer

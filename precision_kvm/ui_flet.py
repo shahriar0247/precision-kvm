@@ -186,8 +186,8 @@ class FletPanel:
                                   height=400, expand=True)
         layout_page = ft.Column([
             canvas_box,
-            ft.Text("Drag MAC anywhere — it snaps flush to any monitor edge or "
-                    "corner. The glowing segment is where the cursor crosses.",
+            ft.Text("Drag MAC left or right of THIS PC — it snaps to that edge. "
+                    "The glowing segment is where the cursor crosses.",
                     size=12, color=MUTED)], expand=True, spacing=10)
 
         sharing = ft.Column([
@@ -337,10 +337,8 @@ class FletPanel:
 
     def _pan_end(self, name):
         rect = self.peers[name]
-        snapped = geometry.snap(
-            (round(rect[0]), round(rect[1]), rect[2], rect[3]),
-            self.mons, threshold=max(8, round(16 / self._layout_scale)))
-        self.peers[name] = snapped
+        self.peers[name] = geometry.snap_side(
+            (round(rect[0]), round(rect[1]), rect[2], rect[3]), self.mons)
         self._render_layout()
         self.page.update()
         self._save_peers()

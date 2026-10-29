@@ -151,7 +151,8 @@ class WindowsCapture:
 
     def _peer_map(self, mons):
         if self.peers:
-            return {name: tuple(rect) for name, rect in self.peers.items()}
+            return {name: geometry.snap_side(tuple(rect), mons)
+                    for name, rect in self.peers.items()}
         return {"peer": geometry.default_peer(mons, self.side,
                                               self.peer_align, self.peer_span)}
 
