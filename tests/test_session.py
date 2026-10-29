@@ -53,7 +53,9 @@ def test_ssh_target_validation_cannot_start_options_or_commands():
         launch.assert_not_called()
 
 
-def test_bad_tls_handshake_does_not_stop_host_or_install_hooks():
+def test_bad_tls_handshake_keeps_host_running_without_sharing():
+    # Hooks install at session start so local mac_mode works offline; a failed
+    # handshake must never mark a peer connected.
     messages = []
     session = HostSession(load_settings(), messages.append)
     listener = Mock()
@@ -67,13 +69,25 @@ def test_bad_tls_handshake_does_not_stop_host_or_install_hooks():
         session.stopped.set()
         raise socket.timeout()
 
+    created = []
+
+    class FakeCapture:
+        def __init__(self, *args, **kwargs):
+            self.peer_connected = False
+            created.append(self)
+        start = Mock()
+        stop = Mock()
+        release = Mock()
+        return_local = Mock()
+
     listener.accept.side_effect = accept
     with patch("precision_kvm.session.identity", return_value=("cert", "key", "t" * 32, "pin")), \
          patch("precision_kvm.session.TLSListener", return_value=listener), \
-         patch("precision_kvm.windows.WindowsCapture") as capture:
+         patch("precision_kvm.windows.WindowsCapture", FakeCapture):
         session._run()
-        capture.assert_not_called()
     assert calls == 2
+    assert len(created) == 1 and created[0].start.called
+    assert created[0].peer_connected is False
     assert any("Connection rejected" in message for message in messages)
     listener.close.assert_called()
 

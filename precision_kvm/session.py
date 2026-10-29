@@ -46,6 +46,8 @@ class HostSession:
     def stop(self):
         self.stopped.set()
         self._disconnect()
+        if self.capture:
+            self.capture.stop()
         if self.clipboard:
             self.clipboard.stop()
         if self.listener:
@@ -99,8 +101,6 @@ class HostSession:
             self.status(f"Cannot start Mac client: {exc}")
 
     def _disconnect(self):
-        if self.capture:
-            self.capture.stop()
         if self.sender:
             self.sender.stop()
         if self.channel:
@@ -139,6 +139,16 @@ class HostSession:
                     max_bytes=int(self.settings.get("clipboard_max_mb", 128)) * 1024 * 1024,
                     status=lambda message: self.status(f"Clipboard: {message}"))
                 self.clipboard.start()
+            self.capture = WindowsCapture(self._emit, side=self.settings["side"],
+                high_resolution_timer=True, on_emergency=self.emergency_stop,
+                mouse_mode=self.settings.get("mouse_mode", "raw"),
+                gesture_bridge=self.settings.get("gesture_bridge", True),
+                native_touchpad=self.settings.get("native_touchpad", False),
+                emergency_escape_seconds=self.settings.get("emergency_escape_seconds", 1.5),
+                mac_mode=self.settings.get("mac_mode", False),
+                peer_align=self.settings.get("peer_align", 0.5),
+                peer_span=self.settings.get("peer_span", 0.6))
+            self.capture.start()
             self.ready.set()
             self.status("Waiting for paired Mac; local input remains active")
             while not self.stopped.is_set():
@@ -159,36 +169,33 @@ class HostSession:
                     if self.stopped.is_set():
                         break
                     self.buffer = EventBuffer(int(self.settings["mouse_hz"]))
-                    self.capture = WindowsCapture(self._emit, side=self.settings["side"],
-                        high_resolution_timer=True, on_emergency=self.emergency_stop,
-                        mouse_mode=self.settings.get("mouse_mode", "raw"),
-                        gesture_bridge=self.settings.get("gesture_bridge", True),
-                        native_touchpad=self.settings.get("native_touchpad", False),
-                        emergency_escape_seconds=self.settings.get("emergency_escape_seconds", 1.5),
-                        mac_mode=self.settings.get("mac_mode", False),
-                        peer_align=self.settings.get("peer_align", 0.5),
-                        peer_span=self.settings.get("peer_span", 0.6))
+                    self.capture.peer_connected = True
                     self.sender = Sender(self.channel, self.buffer)
                     writer = threading.Thread(target=self._writer, daemon=True, name="kvm-writer")
                     writer.start()
                     self._workers.append(writer)
-                    self.capture.start()
                     self.status("Connected • move across the configured edge to share")
                     Receiver(self.channel, self._control).run()
                 except Exception as exc:
                     if not self.stopped.is_set():
                         self.status(f"Disconnected: {type(exc).__name__}: {exc}")
                 finally:
+                    if self.capture:
+                        self.capture.peer_connected = False
+                        self.capture.release()
                     self._disconnect()
                     for worker in self._workers:
                         worker.join(3)
                     self._workers.clear()
-                    self.capture = self.sender = self.channel = self.buffer = None
+                    self.sender = self.channel = self.buffer = None
         except Exception as exc:
             if not self.stopped.is_set():
                 self.status(f"Host stopped: {exc}")
         finally:
             self._disconnect()
+            if self.capture:
+                self.capture.stop()
+                self.capture = None
             if self.clipboard:
                 self.clipboard.stop()
             if self.listener:

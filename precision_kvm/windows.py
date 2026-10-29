@@ -65,6 +65,7 @@ class WindowsCapture:
         self._mac_alt = self._mac_ctrl = self._mac_alt_injected = False
         self.touchpads: WindowsTouchpads | None = None
         self._emergency_requested = False
+        self.peer_connected = False
         self.active = False
         self.error: str | None = None
         self._thread: threading.Thread | None = None
@@ -232,6 +233,7 @@ class WindowsCapture:
                     x, y = data.pt.x, data.pt.y
                     if not self.active:
                         if (not self._stopping.is_set() and self._at_edge(x, y)
+                                and self.peer_connected
                                 and not self._keys and not self._buttons):
                             self._entry_x = x / max(1, self._size[0] - 1)
                             self._entry_y = y / max(1, self._size[1] - 1)
