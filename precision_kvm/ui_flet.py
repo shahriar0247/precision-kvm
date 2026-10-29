@@ -108,7 +108,7 @@ class FletPanel:
         ])
         self.start_button = buttons.controls[0]
         right = ft.Container(
-            expand=True, padding=ft.padding.only(top=20, right=22, bottom=16, left=22),
+            expand=True, padding=ft.Padding.only(top=20, right=22, bottom=16, left=22),
             content=ft.Column([
                 header, sub,
                 self.body,
