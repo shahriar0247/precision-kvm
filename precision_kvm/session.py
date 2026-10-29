@@ -5,6 +5,7 @@ import socket
 import re
 import ssl
 import subprocess
+import sys
 import threading
 import time
 from typing import Callable, TYPE_CHECKING
@@ -136,7 +137,10 @@ class HostSession:
             return False
 
     def _run(self):
-        from .windows import WindowsCapture
+        if sys.platform == "darwin":
+            from .mac_capture import MacCapture as Capture
+        else:
+            from .windows import WindowsCapture as Capture
         try:
             cert, key, token, fingerprint = identity()
             tls = bool(self.settings.get("tls", True))
@@ -159,17 +163,20 @@ class HostSession:
                 self.clipboard.start()
             peers = {name: (rect["x"], rect["y"], rect["w"], rect["h"])
                      for name, rect in (self.settings.get("peers") or {}).items()}
-            self.capture = WindowsCapture(self._emit, side=self.settings["side"],
-                high_resolution_timer=True, on_emergency=self.emergency_stop,
-                mouse_mode=self.settings.get("mouse_mode", "raw"),
-                gesture_bridge=self.settings.get("gesture_bridge", True),
-                native_touchpad=self.settings.get("native_touchpad", False),
-                emergency_escape_seconds=self.settings.get("emergency_escape_seconds", 1.5),
-                mac_mode=self.settings.get("mac_mode", False),
+            capture_kwargs = dict(side=self.settings["side"],
+                on_emergency=self.emergency_stop,
                 lock_sync=self.settings.get("lock_sync", True),
                 peer_align=self.settings.get("peer_align", 0.5),
                 peer_span=self.settings.get("peer_span", 0.6),
                 peers=peers or None)
+            if sys.platform == "win32":
+                capture_kwargs.update(high_resolution_timer=True,
+                    mouse_mode=self.settings.get("mouse_mode", "raw"),
+                    gesture_bridge=self.settings.get("gesture_bridge", True),
+                    native_touchpad=self.settings.get("native_touchpad", False),
+                    emergency_escape_seconds=self.settings.get("emergency_escape_seconds", 1.5),
+                    mac_mode=self.settings.get("mac_mode", False))
+            self.capture = Capture(self._emit, **capture_kwargs)
             self.capture.start()
             self.ready.set()
             self.status("Waiting for paired Mac; local input remains active")
@@ -284,14 +291,16 @@ def _resolve_host(config: dict, status) -> None:
 
 
 def run_client(config: dict, connect_timeout=3, stop_event=None, status=print):
-    from .mac import MacInjector
-
-    if not MacInjector.accessibility_available(prompt=True):
-        raise RuntimeError("Grant Accessibility access to this Python executable/Terminal in "
-                           "System Settings > Privacy & Security > Accessibility, then reconnect")
+    if sys.platform == "darwin":
+        from .mac import MacInjector as Injector
+        if not Injector.accessibility_available(prompt=True):
+            raise RuntimeError("Grant Accessibility access to this Python executable/Terminal in "
+                               "System Settings > Privacy & Security > Accessibility, then reconnect")
+    else:
+        from .windows_inject import WindowsInjector as Injector
     stopped = threading.Event()
     buffer = EventBuffer(120)
-    injector = MacInjector(on_return=buffer.put)
+    injector = Injector(on_return=buffer.put)
     channel = None
     sender = None
     workers = []

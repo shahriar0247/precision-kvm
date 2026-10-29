@@ -46,30 +46,20 @@ def test_emergency_stops_server_instead_of_only_returning_pointer():
     assert "Emergency STOP" in messages[-1]
 
 
-def test_control_panel_constructs_and_collects_settings_without_starting():
-    import tkinter as tk
-    from precision_kvm.ui import ControlPanel
-    try:
-        root = tk.Tk()
-    except tk.TclError:
-        pytest.skip("No desktop display available")
-    root.withdraw()
-    try:
-        panel = ControlPanel(root)
-        root.update_idletasks()
-        assert panel.session is None
-        assert panel.collect_settings()["mouse_mode"] in ("raw", "system")
-        panel.variables["keymap_preset"].set("ctrl_cmd")
-        assert panel.collect_settings()["keymap_preset"] == "ctrl_cmd"
-        panel.option_command.set(True)
-        panel.toggle_modifier_layout()
-        assert panel.collect_settings()["keymap_preset"] == "option_cmd"
-        panel.option_command.set(False)
-        panel.toggle_modifier_layout()
-        assert panel.collect_settings()["keymap_preset"] == "native"
-        panel.source_key.set("CapsLock")
-        panel.target_key.set("Escape")
-        panel.add_mapping()
-        assert panel.collect_settings()["keymap"]
-    finally:
-        root.destroy()
+def test_web_panel_collects_settings_without_starting():
+    from precision_kvm import ui_common
+    settings = load_settings()
+    collected = ui_common.collect(settings, {"keymap_preset": "ctrl_cmd"})
+    assert collected["keymap_preset"] == "ctrl_cmd"
+    with pytest.raises(ValueError):
+        ui_common.collect(settings, {"mouse_mode": "absolute"})
+
+
+def test_peer_drops_snap_to_left_or_right_edge():
+    from precision_kvm import geometry
+    mons = [(0, 0, 1920, 1080)]
+    peer = (0, 0, 1920, 1080)
+    assert geometry.snap_side((-1400, 400, *peer[2:]), mons) == (-1920, 0, 1920, 1080)
+    assert geometry.snap_side((900, 700, *peer[2:]), mons) == (1920, 0, 1920, 1080)
+    # A stored diagonal position self-heals to whichever side it sits on.
+    assert geometry.snap_side((-1834, 968, *peer[2:]), mons) == (-1920, 0, 1920, 1080)

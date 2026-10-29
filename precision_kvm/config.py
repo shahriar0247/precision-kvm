@@ -44,7 +44,7 @@ def load_settings() -> dict:
                 "mac_mode": False, "lock_sync": True,
                 "peer_align": 0.5, "peer_span": 0.6,
                 "peers": {}, "peer_size": [1920, 1080],
-                "tls": True, "discovery": True, "ui": "qt",
+                "tls": True, "discovery": True, "role": "host",
                 "emergency_escape_seconds": 1.5, "smooth_scroll": True,
                 "smooth_scroll_ms": 60, "smooth_scroll_hz": 120,
                 "windows_home_end": True, "windows_word_nav": True}
@@ -80,7 +80,7 @@ def validate_settings(settings: dict) -> dict:
     for key, allowed in (("side", ("left", "right", "top", "bottom")),
                          ("mouse_mode", ("raw", "system")),
                          ("scroll_mode", ("pixel", "line")),
-                         ("ui", ("qt", "flet", "tk")),
+                         ("role", ("host", "client")),
                          ("keymap_preset", ("native", "ctrl_cmd", "mac_layout", "option_cmd"))):
         if result[key] not in allowed:
             raise ValueError(f"Invalid {key}")

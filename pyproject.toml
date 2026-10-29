@@ -19,8 +19,9 @@ Issues = "https://github.com/shahriar0247/precision-kvm/issues"
 Releases = "https://github.com/shahriar0247/precision-kvm/releases"
 
 [project.optional-dependencies]
-mac = ["pyobjc-framework-Quartz>=10", "pyobjc-framework-Cocoa>=10"]
-ui = ["PySide6>=6.6", "flet>=1.0", "pystray>=0.19"]
+mac = ["pyobjc-framework-Quartz>=10", "pyobjc-framework-Cocoa>=10",
+       "pyobjc-framework-WebKit>=10", "pywebview>=5"]
+ui = ["pywebview>=5", "pythonnet>=3; sys_platform=='win32'", "pystray>=0.19"]
 dev = ["pytest>=8", "ruff", "mypy", "build"]
 
 [project.scripts]

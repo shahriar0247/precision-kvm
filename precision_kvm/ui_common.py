@@ -1,15 +1,11 @@
-"""Shared helpers for the Qt and Flet control panels."""
+"""Shared helpers for the webview control panel."""
 from __future__ import annotations
 
-import os
 from pathlib import Path
-import sys
 
 from . import geometry
-from .config import identity, load_settings, local_ip, save_json, state_dir, validate_settings
+from .config import identity, local_ip, save_json, state_dir, validate_settings
 from .session import HostSession
-
-FRAMEWORKS = {"qt": "Qt 6", "flet": "Flet", "tk": "Tkinter"}
 
 
 def collect(settings: dict, values: dict) -> dict:
@@ -37,17 +33,6 @@ def start_host(settings: dict, status) -> HostSession:
     session = HostSession(settings, status)
     session.start()
     return session
-
-
-def switch_ui(framework: str, start: bool) -> None:
-    """Persist the chosen UI framework and relaunch this executable in it."""
-    settings = load_settings()
-    settings["ui"] = framework
-    save_json(state_dir() / "settings.json", settings)
-    argv = [sys.executable, "gui", "--ui", framework]
-    if start:
-        argv.append("--start")
-    os.execv(sys.executable, argv)
 
 
 def layout_transform(mons, peers, width: float, height: float,

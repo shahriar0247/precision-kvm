@@ -2,6 +2,9 @@
 from unittest.mock import Mock, patch
 import socket
 import ssl
+import sys
+
+import pytest
 
 from precision_kvm.config import load_settings
 from precision_kvm.session import HostSession, run_client, run_client_forever
@@ -29,6 +32,7 @@ def test_overflow_restores_local_control_and_closes_connection():
     session.channel.close.assert_called_once()
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="Accessibility gate is macOS-only")
 def test_client_denied_accessibility_never_connects_or_captures():
     with patch("precision_kvm.mac.MacInjector.accessibility_available", return_value=False), \
          patch("precision_kvm.transport.connect_tls") as connect:

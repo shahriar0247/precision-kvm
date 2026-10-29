@@ -18,13 +18,11 @@ def main():
     parser = argparse.ArgumentParser(description="PrecisionKVM encrypted input and clipboard sharing")
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command")
-    gui = commands.add_parser("gui", help="Open Windows host control panel")
-    gui.add_argument("--start", action="store_true", help="Start sharing and connect the prepared Mac")
-    gui.add_argument("--ui", choices=("qt", "flet", "tk"),
-                   help="Control panel framework (default: saved setting)")
-    client = commands.add_parser("client", help="Run reconnecting macOS client in a terminal")
+    gui = commands.add_parser("gui", help="Open the control panel (host or client, per the role setting)")
+    gui.add_argument("--start", action="store_true", help="Start sharing immediately")
+    client = commands.add_parser("client", help="Run reconnecting input client in a terminal")
     client.add_argument("--config", type=Path, required=True)
-    client_gui = commands.add_parser("client-gui", help="Open native Mac client and tweaks panel")
+    client_gui = commands.add_parser("client-gui", help="Open the control panel in client mode")
     client_gui.add_argument("--config", type=Path)
     startup = commands.add_parser("install-startup", help="Start Mac client UI at login")
     startup.add_argument("--config", type=Path)
@@ -33,29 +31,32 @@ def main():
     commands.add_parser("doctor", help="Check native dependencies and permissions without posting input")
     args = parser.parse_args()
     command = args.command or ("client-gui" if sys.platform == "darwin" else "gui")
-    if command == "gui":
-        if sys.platform != "win32":
-            parser.error("The sharing host UI currently requires Windows; use client-gui on macOS")
-        from .ui import run_ui
-        run_ui(start=getattr(args, "start", False), ui=getattr(args, "ui", None))
-    elif command in ("client", "client-gui"):
-        if sys.platform != "darwin":
-            parser.error("The input client requires macOS")
-        import fcntl
+    if command in ("gui", "client-gui"):
+        from .ui_web import run_ui
+        if command == "client-gui":
+            # Client entry point: default to client role when none is saved.
+            from .config import load_settings, save_json
+            settings = load_settings()
+            if settings.get("role", "host") == "host":
+                settings["role"] = "client"
+                save_json(state_dir() / "settings.json", settings)
+        run_ui(start=getattr(args, "start", False))
+    elif command == "client":
         config_path = getattr(args, "config", None) or state_dir() / "client.json"
         try:
-            with (state_dir() / "client.lock").open("a") as lock:
-                try:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    print("PrecisionKVM client is already running.", flush=True)
-                    return
-                if command == "client-gui":
-                    from .client_ui import run_client_gui
-                    run_client_gui(config_path)
-                else:
+            if sys.platform == "darwin":
+                import fcntl
+                with (state_dir() / "client.lock").open("a") as lock:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        print("PrecisionKVM client is already running.", flush=True)
+                        return
                     from .session import run_client_forever
                     run_client_forever(json.loads(config_path.read_text()))
+            else:
+                from .session import run_client_forever
+                run_client_forever(json.loads(config_path.read_text()))
         except KeyboardInterrupt:
             pass
         except Exception as exc:
@@ -80,10 +81,12 @@ def main():
             injector = MacInjector()
             result["display"] = [injector.width, injector.height]
         elif sys.platform == "win32":
-            import tkinter
+            __import__("webview")
             from .windows import WindowsCapture
-            result["tk"] = tkinter.TkVersion
+            from .windows_inject import WindowsInjector
+            result["webview"] = True
             result["capture_import"] = WindowsCapture.__name__
+            result["injector_import"] = WindowsInjector.__name__
         else:
             result["supported_input_platform"] = False
         print(json.dumps(result, indent=2))
