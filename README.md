@@ -28,10 +28,12 @@ Native packages include everything — no Python needed. Each ships a `.sha256` 
 
 ## 60-second setup
 
-1. **PC:** unzip, run `PrecisionKVM.exe`, keep **Host**. Drag the MAC CLIENT box left or right — it snaps to that edge.
+1. **PC:** unzip, run `PrecisionKVM.exe`, keep **Host**. The diagram shows your real monitors — drag the client box to any edge (sides, top, bottom, corners); it snaps flush.
 2. **PC:** click **Export pairing file**, copy it to the Mac.
 3. **Mac:** open `PrecisionKVM.app` (right-click → Open), import the pairing file, grant Accessibility.
 4. Press **Start sharing** and slide through the edge.
+
+**More machines?** Click **+ Add client**, drag the new box where that machine sits, double-click its name to rename it, and export the same pairing file to it — each connected client controls its own box.
 
 Either machine can host or client — flip the role picker at the top of the panel.
 
@@ -43,7 +45,7 @@ Either machine can host or client — flip the role picker at the top of the pan
 - **Any-key remapping** — named keys, scan codes, media keys, per-modifier; a full keymap table.
 - **Gestures** — desktop-switch shortcuts bridge to Mission Control; experimental 4-finger swipe recognition.
 - **Live latency graph** — the panel shows the actual round-trip time while you share.
-- **Predictable layout** — left/right edge drag only; saved positions can't drift or overlap.
+- **Multi-client, real topology** — the canvas maps your actual displays; drop clients on any edge or corner and cross into the one that sits there.
 - **Real security** — pairing token + pinned certificate over TLS; toggle off only on a trusted wire. mDNS discovery, configurable port.
 - **Tray + login startup** — close the window, it keeps sharing.
 
@@ -74,7 +76,7 @@ Checks: `pytest -q` · `ruff check precision_kvm tests` · `mypy precision_kvm` 
 
 ## Honest limits
 
-- One host ↔ one client; each side's displays act as one shared edge.
+- One shared session at a time: crossing activates a single client; returning frees it for the next crossing.
 - Secure desktops, login screens, elevated apps and macOS Secure Input block capture/injection — that's the OS working as intended.
 - Rebuilding the Mac app revokes Accessibility — re-toggle it after each update.
 - Linux: package installs, but there are no input backends yet.

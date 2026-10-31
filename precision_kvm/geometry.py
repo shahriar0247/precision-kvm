@@ -154,6 +154,51 @@ def snap_side(peer: Rect, mons: list[Rect]) -> Rect:
     return x, by + (bh - ph) // 2, pw, ph
 
 
+def _edge_spans(mons: list[Rect], side: str, bounds: Rect) -> list[tuple[int, int]]:
+    """Axis spans (along an edge) where local monitors actually face outward."""
+    bx, by, bw, bh = bounds
+    spans = []
+    for mx, my, mw, mh in mons:
+        if side == "left" and mx == bx or side == "right" and mx + mw == bx + bw:
+            spans.append((my, my + mh))
+        elif side == "top" and my == by or side == "bottom" and my + mh == by + bh:
+            spans.append((mx, mx + mw))
+    return spans
+
+
+def _fit_along(pos: float, length: int, spans: list[tuple[int, int]],
+               lo: int, hi: int, min_overlap: float = 0.25) -> int:
+    """Keep the peer within the union band on the along-axis, then guarantee
+    real overlap with at least one outward-facing monitor span."""
+    pos = min(hi - length * min_overlap, max(lo - length * (1 - min_overlap), pos))
+    if not spans or any(min(pos + length, e) - max(pos, s) > 0 for s, e in spans):
+        return round(pos)
+    s, e = min(spans, key=lambda se: min(abs(pos - se[0]), abs(pos + length - se[1])))
+    pos = min(e - length * min_overlap, max(s - length * (1 - min_overlap), pos))
+    return round(pos)
+
+
+def snap_to_edge(peer: Rect, mons: list[Rect]) -> Rect:
+    """Magnet-snap a dropped peer flush to the nearest union edge — left,
+    right, top or bottom — keeping its position along that edge while
+    clamping so a real overlap with a facing monitor always exists."""
+    px, py, pw, ph = peer
+    bounds = union_bounds(mons)
+    bx, by, bw, bh = bounds
+    cx, cy = px + pw / 2, py + ph / 2
+    distances = ((abs(cx - bx), "left"), (abs(cx - (bx + bw)), "right"),
+                 (abs(cy - by), "top"), (abs(cy - (by + bh)), "bottom"))
+    side = min(distances)[1]
+    spans = _edge_spans(mons, side, bounds)
+    if side == "left":
+        return bx - pw, _fit_along(py, ph, spans, by, by + bh), pw, ph
+    if side == "right":
+        return bx + bw, _fit_along(py, ph, spans, by, by + bh), pw, ph
+    if side == "top":
+        return _fit_along(px, pw, spans, bx, bx + bw), by - ph, pw, ph
+    return _fit_along(px, pw, spans, bx, bx + bw), by + bh, pw, ph
+
+
 def snap(peer: Rect, mons: list[Rect], threshold: int) -> Rect:
     """Magnetic snap like the OS display settings: pull a peer edge flush."""
     px, py, pw, ph = peer

@@ -150,7 +150,7 @@ class WindowsCapture:
 
     def _peer_map(self, mons):
         if self.peers:
-            return {name: geometry.snap_side(tuple(rect), mons)
+            return {name: geometry.snap_to_edge(tuple(rect), mons)
                     for name, rect in self.peers.items()}
         return {"peer": geometry.default_peer(mons, self.side,
                                               self.peer_align, self.peer_span)}
@@ -247,7 +247,8 @@ class WindowsCapture:
                             self._anchor = (mon[0] + mon[2] // 2, mon[1] + mon[3] // 2)
                             self.active = True
                             if self._emit({"type": "activate", "normalized_y": ny,
-                                           "normalized_x": nx, "side": side}):
+                                           "normalized_x": nx, "side": side,
+                                           "peer": name}):
                                 user.SetCursorPos(*self._anchor)
                                 return 1
                     else:

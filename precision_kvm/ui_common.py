@@ -109,7 +109,7 @@ def load_layout(settings: dict):
     """(monitors, peers) for the layout editor; peers fall back to the
     configured side when none have been placed yet."""
     mons = geometry.monitors() or [(0, 0, 1920, 1080)]
-    peers = {name: geometry.snap_side((rect["x"], rect["y"], rect["w"], rect["h"]), mons)
+    peers = {name: geometry.snap_to_edge((rect["x"], rect["y"], rect["w"], rect["h"]), mons)
              for name, rect in (settings.get("peers") or {}).items()}
     if not peers:
         peers = {"mac": geometry.default_peer(mons, settings.get("side", "left"),
@@ -124,7 +124,7 @@ def load_layout(settings: dict):
 def save_peers(settings: dict, peers: dict) -> dict:
     settings = dict(settings)
     mons = geometry.monitors() or [(0, 0, 1920, 1080)]
-    settings["peers"] = {name: dict(zip("xywh", (int(v) for v in geometry.snap_side(r, mons))))
+    settings["peers"] = {name: dict(zip("xywh", (int(v) for v in geometry.snap_to_edge(r, mons))))
                          for name, r in peers.items()}
     return persist(settings)
 

@@ -7,20 +7,64 @@ import sys
 import pytest
 
 from precision_kvm.config import load_settings
+from precision_kvm import session as session_module
 from precision_kvm.session import HostSession, run_client, run_client_forever
 from precision_kvm.transport import BackpressureError
 
 
 def test_activation_carries_settings_and_return_preserves_position():
     session = HostSession(load_settings(), lambda value: None)
-    session.buffer = Mock()
+    link = session_module._PeerLink(Mock())
+    link.buffer = Mock()
+    session.links = [link]
     session.capture = Mock()
-    assert session._emit({"type": "activate", "normalized_y": 0.3}) is True
-    event = session.buffer.put.call_args.args[0]
+    assert session._emit({"type": "activate", "normalized_y": 0.3, "peer": "mac"}) is True
+    event = link.buffer.put.call_args.args[0]
     assert event["gain"] == session.settings["gain"]
-    assert event["side"] == session.settings["side"]
-    session._control({"type": "return", "normalized_y": 0.7, "normalized_x": 0.4})
+    assert link.name == "mac"
+    session._control(link, {"type": "return", "normalized_y": 0.7, "normalized_x": 0.4})
     session.capture.return_local.assert_called_once_with(0.7, 0.4)
+
+
+def test_multi_peer_routing_targets_named_link():
+    session = HostSession(load_settings(), lambda value: None)
+    mac = session_module._PeerLink(Mock(), "mac")
+    mac.buffer = Mock()
+    linux = session_module._PeerLink(Mock(), "linux")
+    linux.buffer = Mock()
+    session.links = [mac, linux]
+    assert session._emit({"type": "activate", "peer": "linux"}) is True
+    assert session.active_link is linux
+    linux.buffer.put.assert_called_once()
+    mac.buffer.put.assert_not_called()
+    # streamed input goes only to the active link
+    session._emit({"type": "move", "dx": 4, "dy": 2})
+    assert linux.buffer.put.call_count == 2
+    mac.buffer.put.assert_not_called()
+    session._emit({"type": "deactivate"})
+    assert session.active_link is None
+
+
+def test_crossing_into_unclaimed_peer_does_not_steal_other_link():
+    session = HostSession(load_settings(), lambda value: None)
+    mac = session_module._PeerLink(Mock(), "mac")
+    mac.buffer = Mock()
+    session.links = [mac]
+    # "tv" has no client; "mac" must not be claimed by it
+    assert session._emit({"type": "activate", "peer": "tv"}) is False
+    assert mac.name == "mac"
+    assert session.active_link is None
+
+
+def test_unnamed_link_claims_first_peer():
+    session = HostSession(load_settings(), lambda value: None)
+    link = session_module._PeerLink(Mock())
+    link.buffer = Mock()
+    session.links = [link]
+    assert session._emit({"type": "activate", "peer": "mac"}) is True
+    assert link.name == "mac"
+    session._control(link, {"type": "hello", "name": "studio-mac"})
+    assert link.name == "studio-mac"
 
 
 def test_overflow_restores_local_control_and_closes_connection():

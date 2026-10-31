@@ -60,6 +60,40 @@ class GeometryTest(unittest.TestCase):
         snapped = geometry.snap((-1930, -1075, 1920, 1080), mons, threshold=20)
         self.assertEqual((snapped[0] + snapped[2], snapped[1] + snapped[3]), (0, 0))
 
+    def test_snap_to_edge_nearest_side_keeps_along_position(self):
+        # dropped on the right: lands flush, keeps y
+        snapped = geometry.snap_to_edge((1000, 200, 1920, 400), MON)
+        self.assertEqual((snapped[0], snapped[1]), (1920, 200))
+        # dropped above the top edge: snaps up, keeps x
+        snapped = geometry.snap_to_edge((400, -500, 1920, 400), MON)
+        self.assertEqual((snapped[0], snapped[1]), (400, -400))
+        # bottom edge
+        snapped = geometry.snap_to_edge((400, 1300, 1920, 400), MON)
+        self.assertEqual((snapped[0], snapped[1]), (400, 1080))
+
+    def test_snap_to_edge_clamps_to_facing_monitor(self):
+        # staggered monitors: union left edge is faced only by the upper monitor
+        staggered = [(0, 0, 1920, 1080), (1920, 540, 1920, 1080)]
+        # dropped overlapping the PC's left area: snaps flush left with real overlap
+        snapped = geometry.snap_to_edge((-500, 500, 1920, 1080), staggered)
+        self.assertEqual(snapped[0], -1920)
+        overlap = min(snapped[1] + snapped[3], 1080) - max(snapped[1], 0)
+        self.assertGreater(overlap, 0)
+        # crossing must be detected inside the snapped rect
+        self.assertIsNotNone(geometry.hit(staggered, {"mac": snapped}, 0, snapped[1] + 5))
+        # dropped below every left-facing span: slides into overlap anyway
+        snapped = geometry.snap_to_edge((-500, 700, 1920, 380), staggered)
+        self.assertEqual(snapped[0], -1920)
+        overlap = min(snapped[1] + snapped[3], 1080) - max(snapped[1], 0)
+        self.assertGreater(overlap, 0)
+
+    def test_multi_peer_hit_resolution(self):
+        peers = {"mac": (-1920, 0, 1920, 1080), "linux": (1920, 300, 1920, 1080)}
+        self.assertEqual(geometry.hit(MON, peers, 0, 500)[0], "mac")
+        self.assertEqual(geometry.hit(MON, peers, 1919, 500)[0], "linux")
+        # "linux" only overlaps y>=300: crossing above it goes nowhere
+        self.assertIsNone(geometry.hit(MON, peers, 1919, 100))
+
     def test_default_peer_matches_legacy_model(self):
         rect = geometry.default_peer(MON, "left", align=0.5, span=0.6)
         self.assertEqual(rect[0] + rect[2], 0)

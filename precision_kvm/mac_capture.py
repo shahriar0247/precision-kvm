@@ -136,7 +136,7 @@ class MacCapture:
 
     def _peer_map(self, mons):
         if self.peers:
-            return {name: geometry.snap_side(tuple(rect), mons)
+            return {name: geometry.snap_to_edge(tuple(rect), mons)
                     for name, rect in self.peers.items()}
         return {"peer": geometry.default_peer(mons, self.side,
                                               self.peer_align, self.peer_span)}
@@ -238,7 +238,8 @@ class MacCapture:
             self._last_pos = (x, y)
             self.active = True
             if self.on_event({"type": "activate", "normalized_x": nx,
-                              "normalized_y": ny, "side": side}) is False:
+                              "normalized_y": ny, "side": side,
+                              "peer": name}) is False:
                 self.release()
                 return event
             return None  # swallow the crossing move

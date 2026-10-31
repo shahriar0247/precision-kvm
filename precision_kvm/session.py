@@ -22,11 +22,26 @@ if TYPE_CHECKING:
     from .windows import WindowsCapture
 
 
+class _PeerLink:
+    """One live client connection, bound to a named layout peer."""
+    __slots__ = ("channel", "sender", "buffer", "name", "worker")
+
+    def __init__(self, channel, name=""):
+        self.channel = channel
+        self.name = str(name or "")
+        self.sender: Sender | None = None
+        self.buffer: EventBuffer | None = None
+        self.worker: threading.Thread | None = None
+
+
 class HostSession:
     def __init__(self, settings: dict, status: Callable[[str], None] = print):
         self.settings, self.status = settings, status
         self.stopped = threading.Event()
         self.capture: WindowsCapture | None = None
+        self.links: list[_PeerLink] = []
+        self.active_link: _PeerLink | None = None
+        self._links_lock = threading.Lock()
         self.sender: Sender | None = None
         self.channel: FramedSocket | None = None
         self.listener: TLSListener | PlainListener | None = None
@@ -109,15 +124,32 @@ class HostSession:
             self.status(f"Cannot start Mac client: {exc}")
 
     def _disconnect(self):
+        for link in list(self.links):
+            if link.sender:
+                link.sender.stop()
+            link.channel.close()
         if self.sender:
             self.sender.stop()
         if self.channel:
             self.channel.close()
 
+    def _link_for(self, peer_name: str) -> _PeerLink | None:
+        """Route to the named peer's link; an unnamed link claims the peer."""
+        with self._links_lock:
+            for link in self.links:
+                if link.name == peer_name:
+                    return link
+            for link in self.links:
+                if not link.name:
+                    link.name = peer_name
+                    return link
+        return None
+
     def _emit(self, event):
         try:
             if event.get("type") == "activate":
-                event = dict(event, side=self.settings["side"], gain=self.settings["gain"],
+                event = dict(event, side=event.get("side") or self.settings["side"],
+                             gain=self.settings["gain"],
                              scroll_gain=self.settings["scroll_gain"],
                              swap_ctrl_cmd=self.settings["swap_ctrl_cmd"])
                 for name in ("scroll_gain_x", "scroll_gain_y", "scroll_invert_x", "scroll_invert_y",
@@ -125,6 +157,19 @@ class HostSession:
                              "smooth_scroll_ms", "smooth_scroll_hz", "windows_home_end", "windows_word_nav"):
                     if name in self.settings:
                         event[name] = self.settings[name]
+                link = self._link_for(str(event.get("peer") or ""))
+                if link is None or link.buffer is None:
+                    self.status(f"No client connected for '{event.get('peer')}' — crossing ignored")
+                    return False
+                self.active_link = link
+                link.buffer.put(event)
+                return True
+            target = self.active_link
+            if event.get("type") in ("deactivate", "return"):
+                self.active_link = None
+            if target is not None and target.buffer is not None:
+                target.buffer.put(event)
+                return True
             if self.buffer:
                 self.buffer.put(event)
                 return True
@@ -184,7 +229,7 @@ class HostSession:
             self.status("Waiting for paired Mac; local input remains active")
             while not self.stopped.is_set():
                 try:
-                    self.channel = listener.accept()
+                    channel = listener.accept()
                 except socket.timeout:
                     continue
                 except OSError as exc:
@@ -193,32 +238,31 @@ class HostSession:
                     self.status(f"Connection rejected: {exc}")
                     continue
                 try:
-                    authenticate(self.channel, token, server=True)
-                    ready = self.channel.recv()
-                    if ready != {"type": "client_ready", "version": 1}:
-                        raise RuntimeError("Mac has not granted Accessibility permission")
+                    authenticate(channel, token, server=True)
+                    ready = channel.recv()
+                    if not isinstance(ready, dict) or ready.get("type") != "client_ready":
+                        raise RuntimeError("Client has not granted Accessibility permission")
                     if self.stopped.is_set():
+                        channel.close()
                         break
-                    self.buffer = EventBuffer(int(self.settings["mouse_hz"]))
-                    self.capture.peer_connected = True
-                    self.sender = Sender(self.channel, self.buffer)
-                    writer = threading.Thread(target=self._writer, daemon=True, name="kvm-writer")
-                    writer.start()
-                    self._workers.append(writer)
-                    self.status("Connected • move across the configured edge to share")
-                    Receiver(self.channel, self._control).run()
-                except Exception as exc:
-                    if not self.stopped.is_set():
-                        self.status(f"Disconnected: {type(exc).__name__}: {exc}")
-                finally:
+                    link = _PeerLink(channel, ready.get("name", ""))
+                    link.buffer = EventBuffer(int(self.settings["mouse_hz"]))
+                    link.sender = Sender(channel, link.buffer)
+                    with self._links_lock:
+                        self.links.append(link)
+                    self.channel = link.channel
+                    self.sender = link.sender
+                    self.buffer = link.buffer
                     if self.capture:
-                        self.capture.peer_connected = False
-                        self.capture.release()
-                    self._disconnect()
-                    for worker in self._workers:
-                        worker.join(3)
-                    self._workers.clear()
-                    self.sender = self.channel = self.buffer = None
+                        self.capture.peer_connected = True
+                    link.worker = threading.Thread(target=self._serve, args=(link,),
+                                                   daemon=True, name="kvm-peer")
+                    link.worker.start()
+                    self._workers.append(link.worker)
+                except Exception as exc:
+                    channel.close()
+                    if not self.stopped.is_set():
+                        self.status(f"Connection rejected: {type(exc).__name__}: {exc}")
         except Exception as exc:
             if not self.stopped.is_set():
                 self.status(f"Host stopped: {exc}")
@@ -235,20 +279,58 @@ class HostSession:
             if self.listener:
                 self.listener.close()
 
-    def _writer(self):
+    def _serve(self, link: _PeerLink):
+        """Serve one connected client until it drops; the accept loop is free
+        to take more clients meanwhile."""
+        writer = threading.Thread(target=self._writer, args=(link,), daemon=True,
+                                  name="kvm-peer-writer")
+        writer.start()
+        self._workers.append(writer)
+        self.status(f"Connected • {link.name or 'client'} — cross the configured edge to share")
         try:
-            if self.sender:
-                self.sender.run()
+            Receiver(link.channel, lambda event: self._control(link, event),
+                     link.channel.close).run()
+        except Exception as exc:
+            if not self.stopped.is_set():
+                self.status(f"Disconnected: {type(exc).__name__}: {exc}")
+        finally:
+            if self.active_link is link:
+                self.active_link = None
+                if self.capture:
+                    self.capture.return_local()
+            with self._links_lock:
+                if link in self.links:
+                    self.links.remove(link)
+                still_connected = bool(self.links)
+            if link.sender:
+                link.sender.stop()
+            link.channel.close()
+            if self.capture and not still_connected:
+                self.capture.peer_connected = False
+                self.capture.release()
+            writer.join(3)
+            if writer in self._workers:
+                self._workers.remove(writer)
+
+    def _writer(self, link: _PeerLink):
+        try:
+            if link.sender:
+                link.sender.run()
         except Exception:
             if self.capture:
                 self.capture.return_local()
 
-    def _control(self, event):
-        if event.get("type") == "return" and self.capture:
+    def _control(self, link: _PeerLink, event):
+        kind = event.get("type")
+        if kind == "return" and self.capture:
             self.capture.return_local(event.get("normalized_y"), event.get("normalized_x"))
-        elif event.get("type") == "ping":
-            self._emit({"type": "pong", "stamp": event["stamp"]})
-        elif event.get("type") == "rtt":
+            if self.active_link is link:
+                self.active_link = None
+        elif kind == "hello":
+            link.name = str(event.get("name") or link.name)
+        elif kind == "ping" and link.buffer is not None:
+            link.buffer.put({"type": "pong", "stamp": event["stamp"]})
+        elif kind == "rtt":
             self.rtt_ms = float(event["ms"])
 
 
@@ -326,6 +408,7 @@ def run_client(config: dict, connect_timeout=3, stop_event=None, status=print):
             return
         channel.send({"type": "client_ready", "version": 1})
         sender = Sender(channel, buffer)
+        buffer.put({"type": "hello", "name": config.get("name") or socket.gethostname()})
 
         def write():
             try:

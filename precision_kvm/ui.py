@@ -4,6 +4,7 @@ from __future__ import annotations
 import collections
 import logging
 import queue
+import re
 import subprocess
 import threading
 import tkinter as tk
@@ -20,6 +21,19 @@ from .config import identity, load_settings, local_ip, save_json, state_dir, val
 from . import geometry, ui_common
 from .keymap import KEY_NAMES, MAC_KEY_NAMES, normalize_keymap
 from .session import HostSession
+
+def _overlap(a, b):
+    return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
+
+
+def _peer_side(rect, mons):
+    """Which union edge a peer rectangle is flush to (legacy `side` setting)."""
+    px, py, pw, ph = rect
+    bx, by, bw, bh = geometry.union_bounds(mons)
+    cx, cy = px + pw / 2, py + ph / 2
+    return min(((abs(cx - bx), "left"), (abs(cx - bx - bw), "right"),
+                (abs(cy - by), "top"), (abs(cy - by - bh), "bottom")))[1]
+
 
 DISPLAY_OPTIONS = {
     "mouse_mode": {"raw": "Raw relative · recommended", "system": "Windows pointer acceleration"},
@@ -131,18 +145,28 @@ class ControlPanel:
         ttk.Button(log_buttons, text="Open log folder",
                    command=lambda: subprocess.Popen(["explorer", str(state_dir())])).pack(side="left", padx=8)
         self.note(logs, 2, "Host events appear live while sharing; Refresh reloads the full log file.")
-        self.canvas = tk.Canvas(connection, height=170, bg=card, highlightthickness=0)
-        self.canvas.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 18))
-        self._drag = None
-        self.canvas.tag_bind("macbox", "<ButtonPress-1>",
-                             lambda e: setattr(self, "_drag", (e.x, e.y)))
-        self.canvas.bind("<B1-Motion>", self._drag_mac)
-        self.canvas.bind("<ButtonRelease-1>", self._drop_mac)
-        self.variables["peer_align"] = tk.DoubleVar(value=self.settings.get("peer_align", 0.5))
-        self.variables["peer_align"].trace_add("write", lambda *args: self.draw_layout())
-        self.field(connection, 1, "Mac address", "peer", host_only=True)
-        self.field(connection, 2, "Mac SSH target", "ssh_target", host_only=True)
-        self.field(connection, 3, "Monitor position", "side", ("left", "right"), host_only=True)
+        self.canvas = tk.Canvas(connection, height=230, bg=card, highlightthickness=0)
+        self.canvas.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        self._drag: tuple[str, int, int] | None = None
+        self._selected: str | None = None
+        self._rename_win: int | None = None
+        self._scale = (1.0, 0.0, 0.0)
+        self._init_peers()
+        self.canvas.bind("<ButtonPress-1>", self._press_peer)
+        self.canvas.bind("<B1-Motion>", self._drag_peer)
+        self.canvas.bind("<ButtonRelease-1>", self._drop_peer)
+        self.canvas.bind("<Double-Button-1>", self._rename_peer)
+        self.canvas.bind("<Button-3>", self._remove_at)
+        tools = ttk.Frame(connection)
+        tools.grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        add_btn = ttk.Button(tools, text="+ Add client", command=self._add_peer)
+        add_btn.pack(side="left")
+        rm_btn = ttk.Button(tools, text="− Remove selected", command=self._remove_peer)
+        rm_btn.pack(side="left", padx=8)
+        self.controls.extend((add_btn, rm_btn))
+        self._host_widgets.extend((tools,))
+        self.field(connection, 2, "Mac address", "peer", host_only=True)
+        self.field(connection, 3, "Mac SSH target", "ssh_target", host_only=True)
         self.field(connection, 4, "Mouse update limit (Hz)", "mouse_hz",
                    ("120", "144", "240", "500", "1000"), host_only=True)
         self.field(connection, 5, "Host port", "port", bounds=(1024, 65533, 1), host_only=True)
@@ -154,7 +178,10 @@ class ControlPanel:
         self.controls.append(pairing)
         self._host_widgets.append(pairing)
         note = ttk.Label(connection, style="Muted.TLabel", wraplength=780, justify="left",
-            text="Drag the MAC CLIENT box left or right of THIS PC — it snaps to that edge.\n"
+            text="Drag each client box anywhere around your displays — it snaps flush to the "
+                 "nearest edge, corners included. Double-click a name to rename it; right-click "
+                 "a box (or select it and click Remove) to delete. Each connected client maps "
+                 "to the box it controls.\n"
                  "Import the pairing file in the client app to connect securely.\n"
                  "Edit settings anytime, then click Apply & reconnect.")
         note.grid(row=9, column=0, columnspan=2, sticky="w", pady=(12, 8))
@@ -267,7 +294,6 @@ class ControlPanel:
         self.latency = tk.Canvas(panel, height=46, bg=card, highlightthickness=0)
         self.latency.pack(fill="x", pady=(6, 0))
         self.latency.bind("<Configure>", lambda _e: self._draw_latency())
-        self.variables["side"].trace_add("write", lambda *args: self.draw_layout())
         self.canvas.bind("<Configure>", lambda event: self.draw_layout())
         root.protocol("WM_DELETE_WINDOW", self.close)
         self._role_changed()
@@ -329,11 +355,12 @@ class ControlPanel:
         settings.update({name: value.get() for name, value in self.variables.items()})
         for name, options in DISPLAY_OPTIONS.items():
             settings[name] = {label: value for value, label in options.items()}.get(settings[name], settings[name])
-        side = settings.get("side", "left")
         mons = geometry.monitors() or [(0, 0, 1920, 1080)]
-        w, h = (int(v) for v in settings.get("peer_size", [1920, 1080]))
-        rect = geometry.snap_side(geometry.default_peer(mons, side, 0.5, 1.0)[:2] + (w, h), mons)
-        settings["peers"] = {"mac": dict(zip("xywh", rect))}
+        settings["peers"] = {name: dict(zip("xywh", (int(v) for v in r)))
+                             for name, r in self._peers.items()}
+        if self._peers:
+            first = next(iter(self._peers.values()))
+            settings["side"] = _peer_side(first, mons)
         return validate_settings(settings)
 
     def _role_changed(self):
@@ -414,64 +441,159 @@ class ControlPanel:
         except (ValueError, TypeError, tk.TclError) as exc:
             self.status.set(str(exc))
 
+    def _init_peers(self):
+        self._mons = geometry.monitors() or [(0, 0, 1920, 1080)]
+        peers = {name: geometry.snap_to_edge(
+                    (int(r["x"]), int(r["y"]), int(r["w"]), int(r["h"])), self._mons)
+                 for name, r in (self.settings.get("peers") or {}).items()
+                 if all(k in r for k in ("x", "y", "w", "h"))}
+        if not peers:
+            w, h = (int(v) for v in self.settings.get("peer_size", [1920, 1080]))
+            side = self.settings.get("side", "left")
+            peers = {"mac": geometry.snap_to_edge(
+                geometry.default_peer(self._mons, side, 0.5, 1.0)[:2] + (w, h), self._mons)}
+        self._peers = peers
+
     def draw_layout(self):
         canvas = self.canvas
         canvas.delete("all")
-        cx, cy = max(canvas.winfo_width(), 700) / 2, 85
-        side = self.variables["side"].get()
-        try:
-            align = float(self.variables["peer_align"].get())
-        except (KeyError, tk.TclError):
-            align = 0.5
-        dx, dy = {"left": (-190, 0), "right": (190, 0), "top": (0, -75), "bottom": (0, 75)}[side]
-        room = 110 if dy else 300
-        along = (align - 0.5) * room
-        ax, ay = (0, along) if dy else (along, 0)
-        px, py = cx - dx / 2, cy - dy / 2
-        mx, my = cx + dx / 2 + ax, cy + dy / 2 + ay
-        w, h = (140, 54) if dy else (160, 90)
-        mx = min(canvas.winfo_width() - w / 2, max(w / 2, mx))
-        my = min(160 - h / 2, max(h / 2, my))
-        canvas.create_line(px, py, mx, my, fill="#2b4a75", width=3, tags="link")
-        for x, y, label, color, tag in ((px, py, "THIS PC", "#2b4a75", "pcbox"),
-                                        (mx, my, "MAC CLIENT", "#1f7a6c", "macbox")):
-            canvas.create_rectangle(x-w/2, y-h/2, x+w/2, y+h/2, fill=color,
-                                    outline="#4d6a8c", width=2, tags=tag)
-            canvas.create_text(x, y, text=label, fill="white",
-                               font=("Segoe UI", 10, "bold"), tags=tag)
-        canvas.tag_bind("macbox", "<Enter>", lambda _e: canvas.configure(cursor="fleur"))
-        canvas.tag_bind("macbox", "<Leave>", lambda _e: canvas.configure(cursor=""))
+        self._rename_win = None
+        self._mons = geometry.monitors() or self._mons
+        w_px, h_px = max(canvas.winfo_width(), 700), 230
+        rects = list(self._mons) + list(self._peers.values())
+        bx, by, bw, bh = geometry.union_bounds(rects)
+        pad = 14.0
+        k = min((w_px - 2 * pad) / bw, (h_px - 2 * pad) / bh)
+        ox, oy = (w_px - bw * k) / 2 - bx * k, (h_px - bh * k) / 2 - by * k
+        self._scale = (k, ox, oy)
+        for i, (mx, my, mw, mh) in enumerate(self._mons):
+            x0, y0, x1, y1 = mx * k + ox, my * k + oy, (mx + mw) * k + ox, (my + mh) * k + oy
+            canvas.create_rectangle(x0, y0, x1, y1, fill="#2b4a75", outline="#4d6a8c",
+                                    width=2, tags=("pcbox",))
+            label = "THIS PC" if i == 0 else f"display {i + 1}"
+            canvas.create_text((x0 + x1) / 2, (y0 + y1) / 2, text=label, fill="white",
+                               font=("Segoe UI", 9, "bold"), tags=("pcbox",))
+        for name, (px, py, pw, ph) in self._peers.items():
+            x0, y0, x1, y1 = px * k + ox, py * k + oy, (px + pw) * k + ox, (py + ph) * k + oy
+            selected = name == self._selected
+            canvas.create_rectangle(x0, y0, x1, y1, fill="#1f7a6c",
+                                    outline="#f2f4f8" if selected else "#4d8c7d",
+                                    width=3 if selected else 2,
+                                    tags=("peerbox", f"peer:{name}"))
+            canvas.create_text((x0 + x1) / 2, (y0 + y1) / 2, text=name, fill="white",
+                               font=("Segoe UI", 9, "bold"),
+                               tags=("peerbox", f"peer:{name}"))
+        canvas.tag_bind("peerbox", "<Enter>", lambda _e: canvas.configure(cursor="fleur"))
+        canvas.tag_bind("peerbox", "<Leave>", lambda _e: canvas.configure(cursor=""))
 
-    def _drag_mac(self, event):
+    def _peer_at(self, event):
+        item = self.canvas.find_closest(event.x, event.y)
+        if not item:
+            return None
+        for tag in self.canvas.gettags(item[0]):
+            if tag.startswith("peer:"):
+                return tag.split(":", 1)[1]
+        return None
+
+    def _press_peer(self, event):
+        name = self._peer_at(event)
+        self._selected = name or self._selected
+        if name:
+            self._drag = (name, event.x, event.y)
+            self.draw_layout()
+
+    def _drag_peer(self, event):
         if self._drag is None:
             return
-        dx, dy = event.x - self._drag[0], event.y - self._drag[1]
-        if self.canvas.find_withtag("macbox"):
-            self.canvas.move("macbox", dx, dy)
-            self._drag = (event.x, event.y)
-            mac = self.canvas.bbox("macbox")
-            pc = self.canvas.bbox("pcbox")
-            link = self.canvas.find_withtag("link")
-            if mac and pc and link:
-                self.canvas.coords(link[0], (pc[0]+pc[2])/2, (pc[1]+pc[3])/2,
-                                   (mac[0]+mac[2])/2, (mac[1]+mac[3])/2)
+        name, lx, ly = self._drag
+        self.canvas.move(f"peer:{name}", event.x - lx, event.y - ly)
+        self._drag = (name, event.x, event.y)
 
-    def _drop_mac(self, _event):
-        items = self.canvas.find_withtag("macbox")
+    def _drop_peer(self, _event):
+        if self._drag is None:
+            return
+        name = self._drag[0]
         self._drag = None
-        if not items:
+        box = self.canvas.bbox(f"peer:{name}")
+        if not box:
             return
-        x0, y0, x1, y1 = self.canvas.bbox(items[0])
-        mx, my = (x0 + x1) / 2, (y0 + y1) / 2
-        cx, cy = max(self.canvas.winfo_width(), 700) / 2, 85
-        ox, oy = mx - cx, my - cy
-        if abs(ox) < 45 and abs(oy) < 35:
+        k, ox, oy = self._scale
+        rect = (round((box[0] - ox) / k), round((box[1] - oy) / k),
+                round((box[2] - box[0]) / k), round((box[3] - box[1]) / k))
+        self._peers[name] = geometry.snap_to_edge(rect, self._mons)
+        self.draw_layout()
+
+    def _rename_peer(self, event):
+        name = self._peer_at(event)
+        if not name or self._rename_win is not None:
+            return
+        box = self.canvas.bbox(f"peer:{name}")
+        if not box:
+            return
+        entry = tk.Entry(self.canvas, width=max(8, len(name) + 2), justify="center")
+        entry.insert(0, name)
+        entry.select_range(0, "end")
+        win = self.canvas.create_window((box[0] + box[2]) / 2, (box[1] + box[3]) / 2,
+                                        window=entry)
+        self._rename_win = win
+
+        def commit(_e=None):
+            new = entry.get().strip()
+            self.canvas.delete(win)
+            self._rename_win = None
+            if (new and new != name and new not in self._peers
+                    and re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", new)):
+                self._peers[new] = self._peers.pop(name)
+                if self._selected == name:
+                    self._selected = new
             self.draw_layout()
-            return
-        side = "left" if ox < 0 else "right"
-        options = DISPLAY_OPTIONS.get("side", {})
-        self.variables["side"].set(options.get(side, side))
-        self.variables["peer_align"].set(0.5)
+
+        def cancel(_e=None):
+            self.canvas.delete(win)
+            self._rename_win = None
+            self.draw_layout()
+
+        entry.bind("<Return>", commit)
+        entry.bind("<FocusOut>", commit)
+        entry.bind("<Escape>", cancel)
+        entry.focus_set()
+
+    def _add_peer(self):
+        index = 2
+        name = "mac2"
+        while name in self._peers:
+            index += 1
+            name = f"mac{index}"
+        pw, ph = (int(v) for v in self.settings.get("peer_size", [1920, 1080]))
+        bx, by, bw, bh = geometry.union_bounds(self._mons)
+        step = ph + 160
+        spots = ([(bx + bw, by + i * step) for i in range(4)]
+                 + [(bx - pw, by + i * step) for i in range(4)]
+                 + [(bx + i * (pw + 160), by - ph) for i in range(3)]
+                 + [(bx + i * (pw + 160), by + bh) for i in range(3)])
+        rect = geometry.snap_to_edge((bx + bw, by, pw, ph), self._mons)
+        for x, y in spots:
+            candidate = geometry.snap_to_edge((x, y, pw, ph), self._mons)
+            if not any(_overlap(candidate, r) for r in self._peers.values()):
+                rect = candidate
+                break
+        self._peers[name] = rect
+        self._selected = name
+        self.draw_layout()
+
+    def _remove_peer(self):
+        if self._selected and self._selected in self._peers:
+            del self._peers[self._selected]
+            self._selected = None
+            self.draw_layout()
+
+    def _remove_at(self, event):
+        name = self._peer_at(event)
+        if name and name in self._peers:
+            del self._peers[name]
+            if self._selected == name:
+                self._selected = None
+            self.draw_layout()
 
     def refresh_logs(self):
         try:
