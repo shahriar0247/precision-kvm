@@ -17,30 +17,18 @@ if os.environ.get("PRECISION_KVM_OPENSSL_LICENSE"):
     datas.append((os.environ["PRECISION_KVM_OPENSSL_LICENSE"], "licenses/OpenSSL"))
 binaries = []
 hiddenimports = ["PIL.Image", "PIL.PngImagePlugin", "PIL.TiffImagePlugin",
-                 "zeroconf", "webview"]
+                 "zeroconf", "tkinter"]
 excludes = [
     "pandas", "scipy", "torch", "torchvision", "torchaudio", "numba", "llvmlite",
     "pyarrow", "botocore", "boto3", "s3transfer", "sqlalchemy", "openpyxl",
     "onnxruntime", "opentelemetry", "tensorboard", "matplotlib", "sklearn",
     "skimage", "sympy", "IPython", "jupyter", "pytest",
     "PySide6", "flet", "flet_web", "flet_cli", "uvicorn", "fastapi", "starlette",
+    "webview", "pythonnet", "clr_loader",
 ]
 if sys.platform == "darwin":
     excludes += ["tkinter", "_tkinter"]
-    hiddenimports += ["WebKit"]
-    for package in ("Quartz", "AppKit", "Foundation", "objc", "WebKit"):
-        try:
-            package_datas, package_binaries, package_hidden = collect_all(package)
-            datas += package_datas
-            binaries += package_binaries
-            hiddenimports += package_hidden
-        except Exception:
-            pass
-else:
-    # pywebview's WebView2 backend needs .NET interop assemblies and its
-    # bundled JS/interop DLLs, which collect_all picks up from the package.
-    hiddenimports += ["clr", "clr_loader", "pythonnet", "cffi", "pycparser"]
-    for package in ("webview", "pythonnet", "clr_loader"):
+    for package in ("Quartz", "AppKit", "Foundation", "objc"):
         try:
             package_datas, package_binaries, package_hidden = collect_all(package)
             datas += package_datas

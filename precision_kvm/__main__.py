@@ -32,7 +32,7 @@ def main():
     args = parser.parse_args()
     command = args.command or ("client-gui" if sys.platform == "darwin" else "gui")
     if command in ("gui", "client-gui"):
-        from .ui_web import run_ui
+        from .ui import run_ui
         if command == "client-gui":
             # Client entry point: default to client role when none is saved.
             from .config import load_settings, save_json
@@ -81,10 +81,10 @@ def main():
             injector = MacInjector()
             result["display"] = [injector.width, injector.height]
         elif sys.platform == "win32":
-            __import__("webview")
+            __import__("tkinter")
             from .windows import WindowsCapture
             from .windows_inject import WindowsInjector
-            result["webview"] = True
+            result["tkinter"] = True
             result["capture_import"] = WindowsCapture.__name__
             result["injector_import"] = WindowsInjector.__name__
         else:

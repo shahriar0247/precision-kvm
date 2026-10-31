@@ -1,11 +1,70 @@
-"""Shared helpers for the webview control panel."""
+"""Shared helpers for the control panel."""
 from __future__ import annotations
 
+import json
+import threading
 from pathlib import Path
 
 from . import geometry
 from .config import identity, local_ip, save_json, state_dir, validate_settings
-from .session import HostSession
+from .session import HostSession, run_client_forever
+
+CLIENT_CONFIG_KEYS = ("host", "port", "token", "fingerprint", "tls", "auto",
+                      "clipboard_enabled", "clipboard_max_mb", "tweaks")
+
+
+class ClientRunner:
+    """Reconnecting client loop bound to a status callback."""
+
+    def __init__(self, status):
+        self.status = status
+        self.stopped = threading.Event()
+        self.thread = None
+
+    @property
+    def active(self):
+        return self.thread is not None and self.thread.is_alive()
+
+    def start(self):
+        if self.active:
+            return
+        path = state_dir() / "client.json"
+        if not path.exists():
+            self.status("Import the pairing file from the host first")
+            return
+        config = json.loads(path.read_text(encoding="utf-8"))
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=run_client_forever,
+                                       args=(config, self.stopped, self.status),
+                                       name="kvm-client", daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.stopped.set()
+        if self.thread and self.thread is not threading.current_thread():
+            self.thread.join(4)
+
+
+def load_client() -> dict:
+    path = state_dir() / "client.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def import_pairing(text: str) -> dict:
+    """Merge pairing JSON into client.json; returns the stored config."""
+    data = json.loads(text)
+    config = {key: data[key] for key in CLIENT_CONFIG_KEYS if key in data}
+    if not (config.get("host") and config.get("token") and config.get("fingerprint")):
+        raise ValueError("Pairing file needs host, token and fingerprint")
+    existing = load_client()
+    existing.update(config)
+    save_json(state_dir() / "client.json", existing)
+    return existing
 
 
 def collect(settings: dict, values: dict) -> dict:
