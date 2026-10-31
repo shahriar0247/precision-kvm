@@ -88,11 +88,14 @@ class ControlPanel:
         style.map("TRadiobutton", background=[("active", bg)])
         style.configure("TLabelframe", background=bg, bordercolor=edge)
         style.configure("TLabelframe.Label", background=bg, foreground=muted)
-        style.configure("TNotebook", background=bg, borderwidth=0)
-        style.configure("TNotebook.Tab", padding=(18, 10), background=card,
-                        foreground=muted, font=("Segoe UI", 10))
-        style.map("TNotebook.Tab", background=[("selected", "#1e3048")],
-                  foreground=[("selected", "white")])
+        style.configure("Panel.TNotebook", background=bg, borderwidth=0,
+                        tabmargins=(6, 6, 6, 0))
+        style.configure("Panel.TNotebook.Tab", padding=(20, 9), background=bg,
+                        foreground=muted, font=("Segoe UI", 10, "bold"),
+                        bordercolor=edge, lightcolor=bg, darkcolor=bg)
+        style.map("Panel.TNotebook.Tab",
+                  background=[("selected", "#123a3d")],
+                  foreground=[("selected", "#3fd3bd"), ("active", ink)])
         style.configure("TEntry", fieldbackground=card, foreground=ink,
                         bordercolor=edge, lightcolor=card, darkcolor=card, padding=8)
         style.configure("TSpinbox", fieldbackground=card, foreground=ink,
@@ -134,7 +137,7 @@ class ControlPanel:
                              ("client", "Client — receives a host's input")):
             ttk.Radiobutton(role_row, text=label, variable=self.variables["role"],
                             value=value, command=self._role_changed).pack(side="left", padx=(14, 0))
-        notebook = ttk.Notebook(panel)
+        notebook = ttk.Notebook(panel, style="Panel.TNotebook")
         notebook.pack(fill="both", expand=True)
         connection, inputs, keys, sharing, tweaks, logs = (ttk.Frame(notebook, padding=18) for _ in range(6))
         for frame, title in ((connection, "Connection"), (inputs, "Mouse & gestures"),
@@ -157,7 +160,8 @@ class ControlPanel:
         ttk.Button(log_buttons, text="Open log folder",
                    command=lambda: subprocess.Popen(["explorer", str(state_dir())])).pack(side="left", padx=8)
         self.note(logs, 2, "Host events appear live while sharing; Refresh reloads the full log file.")
-        self.canvas = tk.Canvas(connection, height=230, bg=card, highlightthickness=0)
+        self.canvas = tk.Canvas(connection, height=230, bg=card, bd=0,
+                                relief="flat", highlightthickness=0)
         self.canvas.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         self._drag: tuple[str, int, int] | None = None
         self._pan_drag: tuple[int, int] | None = None
@@ -166,6 +170,7 @@ class ControlPanel:
         self._animate_after: str | None = None
         self._zoom = 1.0
         self._pan = [0.0, 0.0]
+        self._fit_k: float | None = None
         self._scale = (1.0, 0.0, 0.0)
         self._init_peers()
         self.canvas.bind("<ButtonPress-1>", self._press_peer)
@@ -486,17 +491,18 @@ class ControlPanel:
         self._rename_win = None
         self._mons = geometry.monitors() or self._mons
         w_px, h_px = max(canvas.winfo_width(), 700), 230
-        rects = list(self._mons) + list(self._peers.values())
-        bx, by, bw, bh = geometry.union_bounds(rects)
+        bx, by, bw, bh = geometry.union_bounds(self._mons)
         pad = 14.0
-        k = min((w_px - 2 * pad) / bw, (h_px - 2 * pad) / bh) * self._zoom
+        if self._fit_k is None:
+            self._fit_k = min((w_px - 2 * pad) / bw, (h_px - 2 * pad) / bh)
+        k = self._fit_k * self._zoom
         ox = (w_px - bw * k) / 2 - bx * k + self._pan[0]
         oy = (h_px - bh * k) / 2 - by * k + self._pan[1]
         self._scale = (k, ox, oy)
         for i, (mx, my, mw, mh) in enumerate(self._mons):
             x0, y0, x1, y1 = mx * k + ox, my * k + oy, (mx + mw) * k + ox, (my + mh) * k + oy
             _rounded(canvas, x0 + 3, y0 + 4, x1 + 3, y1 + 4, 10, fill="#0b0d12", outline="")
-            _rounded(canvas, x0, y0, x1, y1, 10, fill="#1f2a44", outline="#3b5278", width=2,
+            _rounded(canvas, x0, y0, x1, y1, 10, fill="#1f2a44", outline="#31415f", width=1,
                      tags=("pcbox",))
             label = "THIS PC" if i == 0 else f"display {i + 1}"
             canvas.create_text((x0 + x1) / 2, (y0 + y1) / 2, text=label, fill="#8fa8d8",
@@ -507,7 +513,7 @@ class ControlPanel:
             _rounded(canvas, x0 + 3, y0 + 4, x1 + 3, y1 + 4, 10, fill="#0b0d12", outline="",
                      tags=(f"peer:{name}",))
             _rounded(canvas, x0, y0, x1, y1, 10, fill="#0d5c55",
-                     outline="#fbbf24" if selected else "#2dd4bf",
+                     outline="#dbeafe" if selected else "#2dd4bf",
                      width=3 if selected else 2,
                      tags=("peerbox", f"peer:{name}"))
             canvas.create_text((x0 + x1) / 2, (y0 + y1) / 2, text=name, fill="#a7f3ea",
@@ -524,7 +530,7 @@ class ControlPanel:
         self._zoom_step(0.1 if event.delta > 0 else -0.1)
 
     def _zoom_reset(self):
-        self._zoom, self._pan = 1.0, [0.0, 0.0]
+        self._zoom, self._pan, self._fit_k = 1.0, [0.0, 0.0], None
         self.draw_layout()
 
     def _animate_drop(self, name, start, end, step=0):
@@ -555,6 +561,7 @@ class ControlPanel:
         if name:
             self._selected = name
             self._drag = (name, event.x, event.y)
+            self.canvas.configure(cursor="fleur")
             self.draw_layout()
         else:
             self._pan_drag = (event.x, event.y)
@@ -573,6 +580,7 @@ class ControlPanel:
 
     def _drop_peer(self, _event):
         self._pan_drag = None
+        self.canvas.configure(cursor="")
         if self._drag is None:
             return
         name = self._drag[0]
@@ -599,7 +607,10 @@ class ControlPanel:
         box = self.canvas.bbox(f"peer:{name}")
         if not box:
             return
-        entry = tk.Entry(self.canvas, width=max(8, len(name) + 2), justify="center")
+        entry = tk.Entry(self.canvas, width=max(8, len(name) + 2), justify="center",
+                         bg="#141d2c", fg="#e6edf7", insertbackground="#3fd3bd",
+                         relief="flat", highlightthickness=1,
+                         highlightcolor="#3fd3bd", highlightbackground="#24344a")
         entry.insert(0, name)
         entry.select_range(0, "end")
         win = self.canvas.create_window((box[0] + box[2]) / 2, (box[1] + box[3]) / 2,
