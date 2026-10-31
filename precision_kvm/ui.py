@@ -144,19 +144,23 @@ class ControlPanel:
         self.field(connection, 3, "Monitor position", "side", ("left", "right"), host_only=True)
         self.field(connection, 4, "Mouse update limit (Hz)", "mouse_hz",
                    ("120", "144", "240", "500", "1000"), host_only=True)
+        self.field(connection, 5, "Host port", "port", bounds=(1024, 65533, 1), host_only=True)
+        self.check(connection, 6, "Encrypted connection (TLS, recommended)", "tls", host_only=True)
+        self.check(connection, 7, "Advertise on the local network (mDNS discovery)", "discovery",
+                   host_only=True)
         pairing = ttk.Button(connection, text="Export pairing file for the client…", command=self.export_pairing)
-        pairing.grid(row=5, column=0, columnspan=2, sticky="w", pady=16)
+        pairing.grid(row=8, column=0, columnspan=2, sticky="w", pady=16)
         self.controls.append(pairing)
         self._host_widgets.append(pairing)
         note = ttk.Label(connection, style="Muted.TLabel", wraplength=780, justify="left",
             text="Drag the MAC CLIENT box left or right of THIS PC — it snaps to that edge.\n"
                  "Import the pairing file in the client app to connect securely.\n"
                  "Edit settings anytime, then click Apply & reconnect.")
-        note.grid(row=6, column=0, columnspan=2, sticky="w", pady=(12, 8))
+        note.grid(row=9, column=0, columnspan=2, sticky="w", pady=(12, 8))
         self._host_widgets.append(note)
         self._host_widgets.append(self.canvas)
         self.client_frame = ttk.LabelFrame(connection, text="Client pairing", padding=12)
-        self.client_frame.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        self.client_frame.grid(row=10, column=0, columnspan=2, sticky="ew", pady=(14, 0))
         self.client_frame.columnconfigure(1, weight=1)
         self.pair_status = tk.StringVar()
         ttk.Label(self.client_frame, textvariable=self.pair_status,
@@ -283,12 +287,14 @@ class ControlPanel:
         if host_only:
             self._host_widgets.extend((caption, control))
 
-    def check(self, parent, row, label, key):
+    def check(self, parent, row, label, key, host_only=False):
         variable = tk.BooleanVar(value=self.settings[key])
         self.variables[key] = variable
         control = ttk.Checkbutton(parent, text=label, variable=variable)
         control.grid(row=row, column=0, columnspan=2, sticky="w", pady=8)
         self.controls.append(control)
+        if host_only:
+            self._host_widgets.append(control)
 
     @staticmethod
     def note(parent, row, text):
@@ -389,8 +395,8 @@ class ControlPanel:
                 return
             _, _, token, fingerprint = identity()
             save_json(Path(destination), {"host": local_ip(settings["peer"]), "port": settings["port"],
-                "token": token, "fingerprint": fingerprint, "clipboard_enabled": settings["clipboard_enabled"],
-                "clipboard_max_mb": 512})
+                "tls": settings["tls"], "token": token, "fingerprint": fingerprint,
+                "clipboard_enabled": settings["clipboard_enabled"], "clipboard_max_mb": 512})
             self.status.set("Pairing exported • import privately in the Mac app")
         except (OSError, ValueError) as exc:
             self.status.set(f"Could not export pairing: {exc}")

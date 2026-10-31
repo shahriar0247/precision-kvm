@@ -32,6 +32,11 @@ def main():
     args = parser.parse_args()
     command = args.command or ("client-gui" if sys.platform == "darwin" else "gui")
     if command in ("gui", "client-gui"):
+        if sys.platform == "darwin":
+            # Native AppKit client panel — the Mac bundle ships without Tk.
+            from .client_ui import run_client_gui
+            run_client_gui(getattr(args, "config", None) or state_dir() / "client.json")
+            return
         from .ui import run_ui
         if command == "client-gui":
             # Client entry point: default to client role when none is saved.
