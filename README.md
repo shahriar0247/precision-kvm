@@ -2,14 +2,18 @@
 
 **A software KVM that feels like a wire.**
 
+[![Release](https://img.shields.io/github/v/release/shahriar0247/precision-kvm?sort=semver&label=release&color=40cdb6)](https://github.com/shahriar0247/precision-kvm/releases)
+[![Build](https://github.com/shahriar0247/precision-kvm/actions/workflows/release.yml/badge.svg)](https://github.com/shahriar0247/precision-kvm/actions/workflows/release.yml)
+[![Platforms](https://img.shields.io/badge/platforms-Windows%20x64%20·%20ARM64%20·%20macOS%20arm64%20·%20x64-365376)](https://github.com/shahriar0247/precision-kvm/releases)
 [![MIT license](https://img.shields.io/badge/license-MIT-40cdb6)](LICENSE)
-[![Source version](https://img.shields.io/badge/source-0.6.0-365376)](CHANGELOG.md)
 
 Software KVMs feel laggy because they buffer — events get batched into queues, polled on timers, or relayed through a cloud. PrecisionKVM does none of that. Raw hardware deltas go straight from kernel hooks onto a dedicated LAN socket, the client injects them immediately, and clipboard data rides its own connection so a 30 MB screenshot never delays a keypress.
 
 Median round-trip on gigabit Ethernet: **~0.9 ms at up to 1000 mouse updates per second** — indistinguishable from plugging the mouse in.
 
-![Control panel](docs/assets/panel.png)
+![Control panel — real monitor topology with multiple clients](docs/assets/panel.png)
+
+*The layout canvas maps your real displays — drag clients to any edge or corner, rename by double-clicking, zoom and pan the map.*
 
 ![Latency comparison](docs/assets/latency.svg)
 
@@ -45,9 +49,12 @@ Either machine can host or client — flip the role picker at the top of the pan
 - **Any-key remapping** — named keys, scan codes, media keys, per-modifier; a full keymap table.
 - **Gestures** — desktop-switch shortcuts bridge to Mission Control; experimental 4-finger swipe recognition.
 - **Live latency graph** — the panel shows the actual round-trip time while you share.
-- **Multi-client, real topology** — the canvas maps your actual displays; drop clients on any edge or corner and cross into the one that sits there.
+- **Multi-client, real topology** — the canvas maps your actual displays; drop clients on any edge or corner and cross into the one that sits there. Zoom, pan, rename inline, add as many as you like.
+- **Per-OS client tweaks** — Mac clients get smooth scrolling, Home/End and word-navigation; Windows clients can drop "Enhance pointer precision" while controlled and lock when you cross back.
 - **Real security** — pairing token + pinned certificate over TLS; toggle off only on a trusted wire. mDNS discovery, configurable port.
 - **Tray + login startup** — close the window, it keeps sharing.
+
+![Windows client tweaks](docs/assets/windows-tweaks.png)
 
 It does not stream video and doesn't replace a hardware KVM for BIOS or login screens.
 
