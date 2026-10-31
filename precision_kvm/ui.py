@@ -139,9 +139,11 @@ class ControlPanel:
                             value=value, command=self._role_changed).pack(side="left", padx=(14, 0))
         notebook = ttk.Notebook(panel, style="Panel.TNotebook")
         notebook.pack(fill="both", expand=True)
-        connection, inputs, keys, sharing, tweaks, logs = (ttk.Frame(notebook, padding=18) for _ in range(6))
+        connection, inputs, keys, sharing, tweaks, wtweaks, logs = (
+            ttk.Frame(notebook, padding=18) for _ in range(7))
         for frame, title in ((connection, "Connection"), (inputs, "Mouse & gestures"),
                              (keys, "Key remapping"), (tweaks, "Mac Tweaks"),
+                             (wtweaks, "Windows Tweaks"),
                              (sharing, "Clipboard & safety"), (logs, "Activity log")):
             notebook.add(frame, text=title)
             frame.columnconfigure(1, weight=1)
@@ -164,6 +166,7 @@ class ControlPanel:
                                 relief="flat", highlightthickness=0)
         self.canvas.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         self._drag: tuple[str, int, int] | None = None
+        self._drag_last: tuple[int, int] | None = None
         self._pan_drag: tuple[int, int] | None = None
         self._selected: str | None = None
         self._rename_win: int | None = None
@@ -196,8 +199,8 @@ class ControlPanel:
         fit_btn.pack(side="left", padx=(0, 8))
         self.controls.extend((add_btn, rm_btn, zi_btn, zo_btn, fit_btn))
         self._host_widgets.extend((tools,))
-        self.field(connection, 2, "Mac address", "peer", host_only=True)
-        self.field(connection, 3, "Mac SSH target", "ssh_target", host_only=True)
+        self.field(connection, 2, "Client address", "peer", host_only=True)
+        self.field(connection, 3, "Client SSH target", "ssh_target", host_only=True)
         self.field(connection, 4, "Mouse update limit (Hz)", "mouse_hz",
                    ("120", "144", "240", "500", "1000"), host_only=True)
         self.field(connection, 5, "Host port", "port", bounds=(1024, 65533, 1), host_only=True)
@@ -293,6 +296,14 @@ class ControlPanel:
                   "into the Mac. Its built-in trackpad scrolling is left alone. The optional local\n"
                   "mouse setting needs macOS input permission; it never changes system settings.\n\n"
                   "The Mac can keep its own explicit tweaks, overriding the PC defaults.")
+        self.check(wtweaks, 0, "Turn off 'Enhance pointer precision' while a Windows "
+                              "client is controlled", "win_mouse_accel_off")
+        self.check(wtweaks, 1, "Lock a Windows client when the cursor returns to this PC",
+                   "win_lock_on_return")
+        self.note(wtweaks, 2, "These preferences travel inside the activation event and apply "
+                  "only to Windows clients — macOS clients ignore them.\n\n"
+                  "Pointer acceleration stays disabled until control returns; the original "
+                  "setting is restored when sharing ends.")
         self.check(sharing, 0, "Share clipboard text and images in both directions", "clipboard_enabled")
         self.field(sharing, 1, "Maximum clipboard size (MiB)", "clipboard_max_mb", bounds=(1, 512, 1))
         self.note(sharing, 2, "New copies sync over a separate encrypted connection, keeping large copies\n"
@@ -301,7 +312,7 @@ class ControlPanel:
         self.check(sharing, 3, "Mac-style shortcuts on this PC — Alt sits where Command would: "
                   "Alt+C copy, Alt+Space search, Alt+Q quit, Alt+arrows Home/End, "
                   "Alt+Shift+3/4 screenshot; Alt+Tab stays unchanged", "mac_mode")
-        self.check(sharing, 4, "Lock the Mac when this PC locks "
+        self.check(sharing, 4, "Lock the client when this PC locks "
                   "(input is never shared on the lock screen)", "lock_sync")
         self.field(sharing, 5, "Hold physical Esc to STOP (seconds)", "emergency_escape_seconds", bounds=(0.5, 10, 0.1))
         self.note(sharing, 6, "Hold Esc for the chosen time to STOP the PC server and clipboard\n"
@@ -452,7 +463,7 @@ class ControlPanel:
     def export_pairing(self):
         try:
             settings = self.collect_settings()
-            destination = filedialog.asksaveasfilename(parent=self.root, title="Export private Mac pairing",
+            destination = filedialog.asksaveasfilename(parent=self.root, title="Export client pairing",
                 initialfile="PrecisionKVM-pairing.json", defaultextension=".json", filetypes=[("Pairing file", "*.json")])
             if not destination:
                 return
@@ -460,7 +471,7 @@ class ControlPanel:
             save_json(Path(destination), {"host": local_ip(settings["peer"]), "port": settings["port"],
                 "tls": settings["tls"], "token": token, "fingerprint": fingerprint,
                 "clipboard_enabled": settings["clipboard_enabled"], "clipboard_max_mb": 512})
-            self.status.set("Pairing exported • import privately in the Mac app")
+            self.status.set("Pairing exported • import privately in the client app")
         except (OSError, ValueError) as exc:
             self.status.set(f"Could not export pairing: {exc}")
 
@@ -561,16 +572,18 @@ class ControlPanel:
         if name:
             self._selected = name
             self._drag = (name, event.x, event.y)
+            self._drag_last = (event.x, event.y)
             self.canvas.configure(cursor="fleur")
             self.draw_layout()
         else:
             self._pan_drag = (event.x, event.y)
 
     def _drag_peer(self, event):
-        if self._drag is not None:
-            name, lx, ly = self._drag
+        if self._drag is not None and self._drag_last is not None:
+            name = self._drag[0]
+            lx, ly = self._drag_last
             self.canvas.move(f"peer:{name}", event.x - lx, event.y - ly)
-            self._drag = (name, event.x, event.y)
+            self._drag_last = (event.x, event.y)
         elif self._pan_drag is not None:
             lx, ly = self._pan_drag
             self._pan[0] += event.x - lx
@@ -578,19 +591,20 @@ class ControlPanel:
             self._pan_drag = (event.x, event.y)
             self.draw_layout()
 
-    def _drop_peer(self, _event):
+    def _drop_peer(self, event):
         self._pan_drag = None
+        self._drag_last = None
         self.canvas.configure(cursor="")
         if self._drag is None:
             return
-        name = self._drag[0]
+        name, press_x, press_y = self._drag
         self._drag = None
-        box = self.canvas.bbox(f"peer:{name}")
-        if not box:
+        if name not in self._peers:
             return
-        k, ox, oy = self._scale
-        rect = (round((box[0] - ox) / k), round((box[1] - oy) / k),
-                round((box[2] - box[0]) / k), round((box[3] - box[1]) / k))
+        k = self._scale[0]
+        px, py, pw, ph = self._peers[name]
+        rect = (px + round((event.x - press_x) / k),
+                py + round((event.y - press_y) / k), pw, ph)
         snapped = geometry.snap_to_edge(rect, self._mons)
         if snapped == rect:
             self._peers[name] = snapped
@@ -640,10 +654,10 @@ class ControlPanel:
 
     def _add_peer(self):
         index = 2
-        name = "mac2"
+        name = "client2"
         while name in self._peers:
             index += 1
-            name = f"mac{index}"
+            name = f"client{index}"
         pw, ph = (int(v) for v in self.settings.get("peer_size", [1920, 1080]))
         bx, by, bw, bh = geometry.union_bounds(self._mons)
         step = ph + 160

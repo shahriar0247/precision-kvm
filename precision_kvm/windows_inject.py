@@ -25,6 +25,8 @@ if user is not None:
                                  wintypes.DWORD, wintypes.DWORD, ctypes.c_size_t]
     user.LockWorkStation.argtypes = []
     user.LockWorkStation.restype = wintypes.BOOL
+    user.SystemParametersInfoW.argtypes = [wintypes.UINT, wintypes.UINT,
+                                         ctypes.c_void_p, wintypes.UINT]
 
 KEYEVENTF_SCANCODE = 0x0008
 KEYEVENTF_KEYUP = 0x0002
@@ -37,6 +39,9 @@ XBUTTON_FOR = {3: 0x0001, 4: 0x0002}
 MOUSEEVENTF_WHEEL = 0x0800
 MOUSEEVENTF_HWHEEL = 0x1000
 MOUSEEVENTF_MOVE = 0x0001
+
+SPI_GETMOUSE = 0x0003
+SPI_SETMOUSE = 0x0004
 
 
 class WindowsInjector:
@@ -53,6 +58,9 @@ class WindowsInjector:
         self.scroll_gain_x = self.scroll_gain_y = 1.0
         self.scroll_invert_x = self.scroll_invert_y = False
         self.scroll_mode = "pixel"
+        self.accel_off = False
+        self.lock_on_return = False
+        self._mouse_params: list[int] | None = None
         self.buttons: set[int] = set()
         self.held_vks: set[int] = set()
         self.x = self.y = 0.0
@@ -111,6 +119,15 @@ class WindowsInjector:
         self.scroll_mode = event.get("scroll_mode", "pixel")
         if self.scroll_mode not in ("pixel", "line"):
             raise ValueError("Scroll mode must be pixel or line")
+        self.accel_off = bool(event.get("win_mouse_accel_off", False))
+        self.lock_on_return = bool(event.get("win_lock_on_return", False))
+        if self.accel_off and self._mouse_params is None:
+            params = (ctypes.c_int * 3)()
+            if user.SystemParametersInfoW(SPI_GETMOUSE, 0, ctypes.byref(params), 0):
+                self._mouse_params = [params[0], params[1], params[2]]
+                user.SystemParametersInfoW(SPI_SETMOUSE, 0,
+                                           ctypes.byref((ctypes.c_int * 3)(
+                                               params[0], params[1], 0)), 0)
         axis = "normalized_x" if side in ("top", "bottom") else "normalized_y"
         fraction = max(0.0, min(1.0, float(event.get(axis, 0.5))))
         self.x = self.left + (self.width - 2 if side == "left" else 1)
@@ -136,6 +153,8 @@ class WindowsInjector:
                         if self.side in ("left", "right")
                         else (self.x - self.left) / max(1, self.width - 1))
             self.release_all()
+            if self.lock_on_return:
+                user.LockWorkStation()
             message = {"type": "return", "normalized_y": max(0.0, min(1.0, fraction))}
             if self.side in ("top", "bottom"):
                 message["normalized_x"] = message["normalized_y"]
@@ -188,6 +207,10 @@ class WindowsInjector:
 
     def release_all(self):
         self.active = False
+        if self._mouse_params is not None:
+            params = (ctypes.c_int * 3)(*self._mouse_params)
+            user.SystemParametersInfoW(SPI_SETMOUSE, 0, ctypes.byref(params), 0)
+            self._mouse_params = None
         for button in tuple(self.buttons):
             data = XBUTTON_FOR.get(button, 0) if button >= 3 else 0
             user.mouse_event(MOUSE_UP[button], 0, 0, data, 0)

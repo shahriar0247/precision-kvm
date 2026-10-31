@@ -101,7 +101,7 @@ class HostSession:
         """Launch the prepared client through key-authenticated SSH, explicitly from UI."""
         target = self.settings.get("ssh_target", "")
         if not re.fullmatch(r"[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+", target):
-            self.status("Enter a valid user@host SSH target, or start the Mac client manually")
+            self.status("Enter a valid user@host SSH target, or start the client manually")
             return
         if not self.ready.wait(4) or self.stopped.is_set():
             return
@@ -119,9 +119,9 @@ class HostSession:
                     self.remote_process = process
             process.wait()
             if not self.stopped.is_set() and process.returncode != 0:
-                self.status("Mac client exited; see the local mac-client.log, then stop and reconnect")
+                self.status("Client exited; see the local client log, then stop and reconnect")
         except Exception as exc:
-            self.status(f"Cannot start Mac client: {exc}")
+            self.status(f"Cannot start client: {exc}")
 
     def _disconnect(self):
         for link in list(self.links):
@@ -154,7 +154,8 @@ class HostSession:
                              swap_ctrl_cmd=self.settings["swap_ctrl_cmd"])
                 for name in ("scroll_gain_x", "scroll_gain_y", "scroll_invert_x", "scroll_invert_y",
                              "scroll_mode", "keymap", "keymap_preset", "smooth_scroll",
-                             "smooth_scroll_ms", "smooth_scroll_hz", "windows_home_end", "windows_word_nav"):
+                             "smooth_scroll_ms", "smooth_scroll_hz", "windows_home_end",
+                             "windows_word_nav", "win_mouse_accel_off", "win_lock_on_return"):
                     if name in self.settings:
                         event[name] = self.settings[name]
                 link = self._link_for(str(event.get("peer") or ""))
@@ -226,7 +227,7 @@ class HostSession:
             self.capture = Capture(self._emit, **capture_kwargs)
             self.capture.start()
             self.ready.set()
-            self.status("Waiting for paired Mac; local input remains active")
+            self.status("Waiting for paired client; local input remains active")
             while not self.stopped.is_set():
                 try:
                     channel = listener.accept()
@@ -432,7 +433,8 @@ def run_client(config: dict, connect_timeout=3, stop_event=None, status=print):
                     allowed = ("keymap_preset", "gain", "scroll_gain_x", "scroll_gain_y",
                                "scroll_invert_x", "scroll_invert_y", "scroll_mode",
                                "smooth_scroll", "smooth_scroll_ms", "smooth_scroll_hz",
-                               "windows_home_end", "windows_word_nav")
+                               "windows_home_end", "windows_word_nav",
+                               "win_mouse_accel_off", "win_lock_on_return")
                     if isinstance(tweaks, dict):
                         event = dict(event, **{name: tweaks[name] for name in allowed if name in tweaks})
                 injector.handle(event)
