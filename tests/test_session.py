@@ -85,9 +85,11 @@ def test_bad_tls_handshake_keeps_host_running_without_sharing():
         return_local = Mock()
 
     listener.accept.side_effect = accept
+    capture_path = ("precision_kvm.mac_capture.MacCapture" if sys.platform == "darwin"
+                    else "precision_kvm.windows.WindowsCapture")
     with patch("precision_kvm.session.identity", return_value=("cert", "key", "t" * 32, "pin")), \
          patch("precision_kvm.session.TLSListener", return_value=listener), \
-         patch("precision_kvm.windows.WindowsCapture", FakeCapture):
+         patch(capture_path, FakeCapture):
         session._run()
     assert calls == 2
     assert len(created) == 1 and created[0].start.called
