@@ -1,6 +1,7 @@
 """Tabbed native settings; native input and networking stay off the Tk thread."""
 from __future__ import annotations
 
+import collections
 import logging
 import queue
 import subprocess
@@ -262,6 +263,10 @@ class ControlPanel:
         self.stats = tk.StringVar(value="No session measurements yet")
         ttk.Label(panel, textvariable=self.status, wraplength=850).pack(anchor="w")
         ttk.Label(panel, textvariable=self.stats, style="Muted.TLabel", wraplength=850).pack(anchor="w", pady=5)
+        self._rtt: collections.deque[float] = collections.deque(maxlen=240)
+        self.latency = tk.Canvas(panel, height=46, bg=card, highlightthickness=0)
+        self.latency.pack(fill="x", pady=(6, 0))
+        self.latency.bind("<Configure>", lambda _e: self._draw_latency())
         self.variables["side"].trace_add("write", lambda *args: self.draw_layout())
         self.canvas.bind("<Configure>", lambda event: self.draw_layout())
         root.protocol("WM_DELETE_WINDOW", self.close)
@@ -511,6 +516,8 @@ class ControlPanel:
         if self.session:
             self.session.stop()
             self.session = None
+        self._rtt.clear()
+        self._draw_latency()
         while not self.messages.empty():
             self.messages.get_nowait()
         self.set_running(False)
@@ -541,6 +548,30 @@ class ControlPanel:
         except tk.TclError:
             pass
 
+    def _draw_latency(self):
+        canvas = self.latency
+        canvas.delete("all")
+        w, h = max(canvas.winfo_width(), 300), 46
+        samples = list(self._rtt)
+        if not samples:
+            canvas.create_text(10, h / 2, anchor="w", fill="#8b98ad", font=("Segoe UI", 9),
+                               text="Live round-trip latency graph appears while sharing — "
+                                    "expect ~1 ms on wired LAN")
+            return
+        ceiling = max(1.0, max(samples) * 1.15)
+        span = max(1, len(samples) - 1)
+        points = []
+        for i, value in enumerate(samples):
+            points += [8 + (w - 118) * i / span, h - 6 - (h - 16) * min(value, ceiling) / ceiling]
+        if len(points) >= 4:
+            canvas.create_line(*points, fill="#3fd3bd", width=2, smooth=True)
+        latest = samples[-1]
+        color = "#3fd3bd" if latest <= 2 else "#ffb5bc"
+        canvas.create_text(w - 8, 14, anchor="e", text=f"{latest:.2f} ms",
+                           fill=color, font=("Segoe UI Semibold", 15))
+        canvas.create_text(w - 8, 36, anchor="e", text="round-trip",
+                           fill="#8b98ad", font=("Segoe UI", 8))
+
     def poll(self):
         while not self.messages.empty():
             self.status.set(self.messages.get_nowait())
@@ -549,6 +580,9 @@ class ControlPanel:
             if metrics:
                 self.stats.set(f"RTT {self.session.rtt_ms:.2f} ms  |  queue peak {metrics.queue_high_water}  |  "
                                f"max queue {metrics.max_queue_ms:.2f} ms  |  merged moves {metrics.coalesced_moves:,}")
+            if self.session.rtt_ms:
+                self._rtt.append(float(self.session.rtt_ms))
+                self._draw_latency()
             if self.session.thread and not self.session.thread.is_alive():
                 self.set_running(False)
         if self.client.active:
