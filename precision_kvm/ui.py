@@ -31,8 +31,11 @@ def _peer_side(rect, mons):
     px, py, pw, ph = rect
     bx, by, bw, bh = geometry.union_bounds(mons)
     cx, cy = px + pw / 2, py + ph / 2
-    return min(((abs(cx - bx), "left"), (abs(cx - bx - bw), "right"),
-                (abs(cy - by), "top"), (abs(cy - by - bh), "bottom")))[1]
+    nx = (cx - (bx + bw / 2)) / (bw / 2)
+    ny = (cy - (by + bh / 2)) / (bh / 2)
+    if abs(nx) >= abs(ny):
+        return "left" if nx < 0 else "right"
+    return "top" if ny < 0 else "bottom"
 
 
 DISPLAY_OPTIONS = {

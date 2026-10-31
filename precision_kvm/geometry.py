@@ -179,16 +179,24 @@ def _fit_along(pos: float, length: int, spans: list[tuple[int, int]],
 
 
 def snap_to_edge(peer: Rect, mons: list[Rect]) -> Rect:
-    """Magnet-snap a dropped peer flush to the nearest union edge — left,
-    right, top or bottom — keeping its position along that edge while
-    clamping so a real overlap with a facing monitor always exists."""
+    """Magnet-snap a dropped peer flush to the union edge it sits on —
+    left, right, top or bottom — keeping its position along that edge
+    while clamping so a real overlap with a facing monitor always exists.
+
+    The side is chosen by direction, not distance: the peer centre is
+    projected into union-normalized space and the dominant axis wins, so
+    dragging a box clearly to the left always lands left no matter how
+    far out it was dropped."""
     px, py, pw, ph = peer
     bounds = union_bounds(mons)
     bx, by, bw, bh = bounds
     cx, cy = px + pw / 2, py + ph / 2
-    distances = ((abs(cx - bx), "left"), (abs(cx - (bx + bw)), "right"),
-                 (abs(cy - by), "top"), (abs(cy - (by + bh)), "bottom"))
-    side = min(distances)[1]
+    nx = (cx - (bx + bw / 2)) / (bw / 2)
+    ny = (cy - (by + bh / 2)) / (bh / 2)
+    if abs(nx) >= abs(ny):
+        side = "left" if nx < 0 else "right"
+    else:
+        side = "top" if ny < 0 else "bottom"
     spans = _edge_spans(mons, side, bounds)
     if side == "left":
         return bx - pw, _fit_along(py, ph, spans, by, by + bh), pw, ph
