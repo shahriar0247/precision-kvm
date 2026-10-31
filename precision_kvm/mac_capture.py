@@ -90,14 +90,14 @@ class MacCapture:
         self.locked = False
         self.error = ""
         self._stopping = threading.Event()
-        self._thread = None
+        self._thread: threading.Thread | None = None
         self._runloop = None
         self._tap = None
         self._last_pos = (0.0, 0.0)
         self._esc_since = 0.0
         self._peer_rect = None
         self._entry = (0.0, 0.0)
-        self._mons = []
+        self._mons: list[tuple] = []
 
     # ----- lifecycle ---------------------------------------------------------
 

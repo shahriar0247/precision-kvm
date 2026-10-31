@@ -524,7 +524,7 @@ class ClipboardServer:
         self.backend = backend
         self.stopped = threading.Event()
         self.thread: threading.Thread | None = None
-        self.listener: TLSListener | None = None
+        self.listener: TLSListener | PlainListener | None = None
         self.channel: FramedSocket | None = None
 
     def start(self):
@@ -548,10 +548,11 @@ class ClipboardServer:
         try:
             backend = self.backend if self.backend is not None else native_backend()
             listener_t = TLSListener if self.cert and self.key else PlainListener
-            self.listener = listener_t(self.cert, self.key, port=self.port)
+            listener = listener_t(self.cert, self.key, port=self.port)
+            self.listener = listener
             while not self.stopped.is_set():
                 try:
-                    self.channel = self.listener.accept()
+                    self.channel = listener.accept()
                     authenticate(self.channel, self.token, server=True)
                     effective = negotiate_limit(self.channel, self.max_bytes, server=True)
                     self.status(f"Clipboard connected (limit {effective / 1024 ** 2:g} MiB)")

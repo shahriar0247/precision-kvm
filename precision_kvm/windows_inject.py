@@ -10,12 +10,12 @@ import ctypes
 from ctypes import wintypes
 import math
 import sys
-from typing import Callable
+from typing import Any, Callable
 
 from . import geometry
 
-user = ctypes.windll.user32 if sys.platform == "win32" else None
-kernel = ctypes.windll.kernel32 if sys.platform == "win32" else None
+user: Any = ctypes.windll.user32 if sys.platform == "win32" else None
+kernel: Any = ctypes.windll.kernel32 if sys.platform == "win32" else None
 
 if user is not None:
     user.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]

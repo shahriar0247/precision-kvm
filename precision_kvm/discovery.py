@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import socket
 import time
+from typing import Any
 
 SERVICE = "_precisionkvm._tcp.local."
 
@@ -11,7 +12,7 @@ def _addresses() -> list[bytes]:
     found = {answer[4][0] for answer in
              socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)}
     found.discard("127.0.0.1")
-    packed = [socket.inet_aton(address) for address in sorted(found)]
+    packed = [socket.inet_aton(str(address)) for address in sorted(found)]
     return packed or [socket.inet_aton("127.0.0.1")]
 
 
@@ -20,7 +21,8 @@ class Advertiser:
     def __init__(self, port: int, properties: dict | None = None):
         self.port = int(port)
         self.properties = {str(k): str(v) for k, v in (properties or {}).items()}
-        self._zeroconf = self._info = None
+        self._zeroconf: Any = None
+        self._info: Any = None
 
     def start(self):
         from zeroconf import ServiceInfo, Zeroconf
@@ -46,11 +48,11 @@ class Advertiser:
 
 def browse(timeout: float = 2.5) -> list[dict]:
     """Return advertised hosts as {name, host, port, tls, fingerprint}."""
-    from zeroconf import ServiceBrowser, Zeroconf
+    from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
     found: list[dict] = []
     zeroconf = Zeroconf()
     try:
-        class Listener:
+        class Listener(ServiceListener):
             def add_service(self, zc, service_type, name):
                 info = zc.get_service_info(service_type, name, timeout=800)
                 if info:

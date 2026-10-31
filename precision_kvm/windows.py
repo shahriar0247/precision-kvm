@@ -67,7 +67,7 @@ class WindowsCapture:
         self.peers = dict(peers) if peers else None
         self._peer_rect: tuple | None = None
         self._monitors: list | None = None
-        self._hit = None
+        self._hit: tuple | None = None
         self._mac_alt = self._mac_ctrl = self._mac_alt_injected = False
         self.touchpads: WindowsTouchpads | None = None
         self._emergency_requested = False
@@ -158,7 +158,9 @@ class WindowsCapture:
     def _return_point(self):
         mons = self._monitors or [(0, 0, *self._size)]
         peers = self._peer_map(mons)
-        peer = self._peer_rect if self._peer_rect in peers.values() else next(iter(peers.values()))
+        peer = self._peer_rect
+        if peer is None or peer not in peers.values():
+            peer = next(iter(peers.values()))
         return geometry.return_point(mons, peer, self._entry_x, self._entry_y)
 
     def _emit(self, event):
@@ -234,12 +236,14 @@ class WindowsCapture:
                     if not self.active:
                         if (not self._stopping.is_set() and self._at_edge(x, y)
                                 and self.peer_connected
-                                and not self._keys and not self._buttons):
+                                and not self._keys and not self._buttons
+                                and self._hit is not None):
                             name, side, nx, ny = self._hit
-                            self._peer_rect = self._peer_map(self._monitors)[name]
+                            mons = self._monitors or [(0, 0, *self._size)]
+                            self._peer_rect = self._peer_map(mons)[name]
                             self._entry_x, self._entry_y = nx, ny
-                            mon = next((m for m in self._monitors
-                                        if geometry.inside(m, x, y)), self._monitors[0])
+                            mon = next((m for m in mons
+                                        if geometry.inside(m, x, y)), mons[0])
                             self._anchor = (mon[0] + mon[2] // 2, mon[1] + mon[3] // 2)
                             self.active = True
                             if self._emit({"type": "activate", "normalized_y": ny,

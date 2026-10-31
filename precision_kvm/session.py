@@ -18,6 +18,7 @@ from .transport import (BackpressureError, EventBuffer, FramedSocket, PlainListe
                         connect, fetch_fingerprint)
 
 if TYPE_CHECKING:
+    from .discovery import Advertiser
     from .windows import WindowsCapture
 
 
@@ -28,7 +29,7 @@ class HostSession:
         self.capture: WindowsCapture | None = None
         self.sender: Sender | None = None
         self.channel: FramedSocket | None = None
-        self.listener: TLSListener | None = None
+        self.listener: TLSListener | PlainListener | None = None
         self.buffer: EventBuffer | None = None
         self.rtt_ms = 0.0
         self.thread: threading.Thread | None = None
@@ -37,7 +38,7 @@ class HostSession:
         self.remote_process: subprocess.Popen | None = None
         self._remote_lock = threading.Lock()
         self.clipboard: ClipboardServer | None = None
-        self.advertiser = None
+        self.advertiser: Advertiser | None = None
         self.emergency_reason = ""
 
     def start(self):
@@ -145,7 +146,8 @@ class HostSession:
             cert, key, token, fingerprint = identity()
             tls = bool(self.settings.get("tls", True))
             listener_t = TLSListener if tls else PlainListener
-            self.listener = listener_t(str(cert), str(key), port=int(self.settings["port"]))
+            listener = listener_t(str(cert), str(key), port=int(self.settings["port"]))
+            self.listener = listener
             if self.settings.get("discovery", True):
                 from .discovery import Advertiser
                 self.advertiser = Advertiser(self.settings["port"],
@@ -182,7 +184,7 @@ class HostSession:
             self.status("Waiting for paired Mac; local input remains active")
             while not self.stopped.is_set():
                 try:
-                    self.channel = self.listener.accept()
+                    self.channel = listener.accept()
                 except socket.timeout:
                     continue
                 except OSError as exc:

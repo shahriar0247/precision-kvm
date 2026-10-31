@@ -36,7 +36,7 @@ class ControlPanel:
         self.messages: queue.Queue[str] = queue.Queue(maxsize=128)
         self.controls: list[ttk.Widget] = []
         self.variables: dict[str, tk.Variable] = {}
-        self._host_widgets: list[ttk.Widget] = []
+        self._host_widgets: list[tk.Widget] = []
         self.client = ui_common.ClientRunner(self.report_status)
         self.keymap = dict(self.settings["keymap"])
         root.title("PrecisionKVM — Input sharing")
@@ -585,7 +585,7 @@ class ControlPanel:
                                   "PrecisionKVM — input sharing", menu)
         threading.Thread(target=self._tray.run, daemon=True, name="kvm-tray").start()
 
-    _tray = None
+    _tray: "pystray.Icon | None" = None
 
     def _restore(self):
         if self._tray:
