@@ -22,6 +22,15 @@ from . import geometry, ui_common
 from .keymap import KEY_NAMES, MAC_KEY_NAMES, normalize_keymap
 from .session import HostSession
 
+def _rounded(canvas, x0, y0, x1, y1, r, **kwargs):
+    """Rounded rectangle on a Tk canvas via a smoothed polygon."""
+    r = min(r, abs(x1 - x0) / 2, abs(y1 - y0) / 2)
+    points = [x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r, x1, y1 - r,
+              x1, y1, x1 - r, y1, x0 + r, y1, x0, y1, x0, y1 - r, x0, y0 + r,
+              x0, y0]
+    return canvas.create_polygon(points, smooth=True, splinesteps=24, **kwargs)
+
+
 def _overlap(a, b):
     return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
 
@@ -151,8 +160,12 @@ class ControlPanel:
         self.canvas = tk.Canvas(connection, height=230, bg=card, highlightthickness=0)
         self.canvas.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         self._drag: tuple[str, int, int] | None = None
+        self._pan_drag: tuple[int, int] | None = None
         self._selected: str | None = None
         self._rename_win: int | None = None
+        self._animate_after: str | None = None
+        self._zoom = 1.0
+        self._pan = [0.0, 0.0]
         self._scale = (1.0, 0.0, 0.0)
         self._init_peers()
         self.canvas.bind("<ButtonPress-1>", self._press_peer)
@@ -160,13 +173,23 @@ class ControlPanel:
         self.canvas.bind("<ButtonRelease-1>", self._drop_peer)
         self.canvas.bind("<Double-Button-1>", self._rename_peer)
         self.canvas.bind("<Button-3>", self._remove_at)
+        self.canvas.bind("<MouseWheel>", self._wheel_zoom)
         tools = ttk.Frame(connection)
         tools.grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 10))
         add_btn = ttk.Button(tools, text="+ Add client", command=self._add_peer)
         add_btn.pack(side="left")
         rm_btn = ttk.Button(tools, text="− Remove selected", command=self._remove_peer)
         rm_btn.pack(side="left", padx=8)
-        self.controls.extend((add_btn, rm_btn))
+        ttk.Separator(tools, orient="vertical").pack(side="left", fill="y", padx=10, pady=2)
+        zi_btn = ttk.Button(tools, text="Zoom in", width=8,
+                            command=lambda: self._zoom_step(0.25))
+        zi_btn.pack(side="left")
+        zo_btn = ttk.Button(tools, text="Zoom out", width=8,
+                            command=lambda: self._zoom_step(-0.25))
+        zo_btn.pack(side="left", padx=4)
+        fit_btn = ttk.Button(tools, text="Fit", width=6, command=self._zoom_reset)
+        fit_btn.pack(side="left", padx=(0, 8))
+        self.controls.extend((add_btn, rm_btn, zi_btn, zo_btn, fit_btn))
         self._host_widgets.extend((tools,))
         self.field(connection, 2, "Mac address", "peer", host_only=True)
         self.field(connection, 3, "Mac SSH target", "ssh_target", host_only=True)
@@ -466,28 +489,57 @@ class ControlPanel:
         rects = list(self._mons) + list(self._peers.values())
         bx, by, bw, bh = geometry.union_bounds(rects)
         pad = 14.0
-        k = min((w_px - 2 * pad) / bw, (h_px - 2 * pad) / bh)
-        ox, oy = (w_px - bw * k) / 2 - bx * k, (h_px - bh * k) / 2 - by * k
+        k = min((w_px - 2 * pad) / bw, (h_px - 2 * pad) / bh) * self._zoom
+        ox = (w_px - bw * k) / 2 - bx * k + self._pan[0]
+        oy = (h_px - bh * k) / 2 - by * k + self._pan[1]
         self._scale = (k, ox, oy)
         for i, (mx, my, mw, mh) in enumerate(self._mons):
             x0, y0, x1, y1 = mx * k + ox, my * k + oy, (mx + mw) * k + ox, (my + mh) * k + oy
-            canvas.create_rectangle(x0, y0, x1, y1, fill="#2b4a75", outline="#4d6a8c",
-                                    width=2, tags=("pcbox",))
+            _rounded(canvas, x0 + 3, y0 + 4, x1 + 3, y1 + 4, 10, fill="#0b0d12", outline="")
+            _rounded(canvas, x0, y0, x1, y1, 10, fill="#1f2a44", outline="#3b5278", width=2,
+                     tags=("pcbox",))
             label = "THIS PC" if i == 0 else f"display {i + 1}"
-            canvas.create_text((x0 + x1) / 2, (y0 + y1) / 2, text=label, fill="white",
+            canvas.create_text((x0 + x1) / 2, (y0 + y1) / 2, text=label, fill="#8fa8d8",
                                font=("Segoe UI", 9, "bold"), tags=("pcbox",))
         for name, (px, py, pw, ph) in self._peers.items():
             x0, y0, x1, y1 = px * k + ox, py * k + oy, (px + pw) * k + ox, (py + ph) * k + oy
             selected = name == self._selected
-            canvas.create_rectangle(x0, y0, x1, y1, fill="#1f7a6c",
-                                    outline="#f2f4f8" if selected else "#4d8c7d",
-                                    width=3 if selected else 2,
-                                    tags=("peerbox", f"peer:{name}"))
-            canvas.create_text((x0 + x1) / 2, (y0 + y1) / 2, text=name, fill="white",
+            _rounded(canvas, x0 + 3, y0 + 4, x1 + 3, y1 + 4, 10, fill="#0b0d12", outline="",
+                     tags=(f"peer:{name}",))
+            _rounded(canvas, x0, y0, x1, y1, 10, fill="#0d5c55",
+                     outline="#fbbf24" if selected else "#2dd4bf",
+                     width=3 if selected else 2,
+                     tags=("peerbox", f"peer:{name}"))
+            canvas.create_text((x0 + x1) / 2, (y0 + y1) / 2, text=name, fill="#a7f3ea",
                                font=("Segoe UI", 9, "bold"),
                                tags=("peerbox", f"peer:{name}"))
         canvas.tag_bind("peerbox", "<Enter>", lambda _e: canvas.configure(cursor="fleur"))
         canvas.tag_bind("peerbox", "<Leave>", lambda _e: canvas.configure(cursor=""))
+
+    def _zoom_step(self, delta):
+        self._zoom = min(4.0, max(0.2, self._zoom + delta))
+        self.draw_layout()
+
+    def _wheel_zoom(self, event):
+        self._zoom_step(0.1 if event.delta > 0 else -0.1)
+
+    def _zoom_reset(self):
+        self._zoom, self._pan = 1.0, [0.0, 0.0]
+        self.draw_layout()
+
+    def _animate_drop(self, name, start, end, step=0):
+        steps = 10
+        if step > steps:
+            self._peers[name] = end
+            self._animate_after = None
+            self.draw_layout()
+            return
+        t = step / steps
+        ease = 1 - (1 - t) ** 3
+        self._peers[name] = tuple(round(s + (e - s) * ease) for s, e in zip(start, end))
+        self.draw_layout()
+        self._animate_after = self.canvas.after(16, self._animate_drop,
+                                                name, start, end, step + 1)
 
     def _peer_at(self, event):
         item = self.canvas.find_closest(event.x, event.y)
@@ -500,19 +552,27 @@ class ControlPanel:
 
     def _press_peer(self, event):
         name = self._peer_at(event)
-        self._selected = name or self._selected
         if name:
+            self._selected = name
             self._drag = (name, event.x, event.y)
             self.draw_layout()
+        else:
+            self._pan_drag = (event.x, event.y)
 
     def _drag_peer(self, event):
-        if self._drag is None:
-            return
-        name, lx, ly = self._drag
-        self.canvas.move(f"peer:{name}", event.x - lx, event.y - ly)
-        self._drag = (name, event.x, event.y)
+        if self._drag is not None:
+            name, lx, ly = self._drag
+            self.canvas.move(f"peer:{name}", event.x - lx, event.y - ly)
+            self._drag = (name, event.x, event.y)
+        elif self._pan_drag is not None:
+            lx, ly = self._pan_drag
+            self._pan[0] += event.x - lx
+            self._pan[1] += event.y - ly
+            self._pan_drag = (event.x, event.y)
+            self.draw_layout()
 
     def _drop_peer(self, _event):
+        self._pan_drag = None
         if self._drag is None:
             return
         name = self._drag[0]
@@ -523,8 +583,14 @@ class ControlPanel:
         k, ox, oy = self._scale
         rect = (round((box[0] - ox) / k), round((box[1] - oy) / k),
                 round((box[2] - box[0]) / k), round((box[3] - box[1]) / k))
-        self._peers[name] = geometry.snap_to_edge(rect, self._mons)
-        self.draw_layout()
+        snapped = geometry.snap_to_edge(rect, self._mons)
+        if snapped == rect:
+            self._peers[name] = snapped
+            self.draw_layout()
+            return
+        if self._animate_after:
+            self.canvas.after_cancel(self._animate_after)
+        self._animate_drop(name, rect, snapped)
 
     def _rename_peer(self, event):
         name = self._peer_at(event)
