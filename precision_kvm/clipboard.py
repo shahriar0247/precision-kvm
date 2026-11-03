@@ -620,7 +620,9 @@ class ClipboardServer:
 class ClipboardClient:
     def __init__(self, config, max_bytes=DEFAULT_MAX_BYTES,
                  status: Callable[[str], None] = print, backend=None):
-        self.config, self.max_bytes, self.status = dict(config), _limit(max_bytes), status
+        # Keep the caller's dict (not a snapshot) so discovery re-resolves
+        # propagate to this client's retry loop.
+        self.config, self.max_bytes, self.status = config, _limit(max_bytes), status
         self.backend = backend
         self.stopped = threading.Event()
         self.thread: threading.Thread | None = None

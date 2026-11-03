@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.10
+
+- Fixed clipboard/screen clients never reaching a corrected port: they started
+  before auto-discovery resolved the host and kept a snapshot of the stale
+  config, so a client paired against an old port retried a dead port forever
+  and the clipboard link never established. Discovery now resolves first, and
+  the side-channel clients share the live config so later re-resolves reach
+  them.
+
 ## 0.9.9
 
 - Discovery no longer overrides the paired host: the configured address is

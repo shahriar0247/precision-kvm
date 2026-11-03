@@ -360,6 +360,10 @@ def run_client_forever(config: dict, stop_event=None, status=print):
     clipboard = None
     screen = None
     try:
+        if config.get("auto"):
+            # Resolve before the side-channel clients start: they snapshot the
+            # config, so a stale port would never be corrected for them.
+            _resolve_host(config, status)
         if config.get("clipboard_enabled", bool(config.get("host"))):
             clipboard = ClipboardClient(config,
                 max_bytes=int(config.get("clipboard_max_mb", 128)) * 1024 * 1024,
@@ -370,8 +374,6 @@ def run_client_forever(config: dict, stop_event=None, status=print):
             screen = ScreenShareClient(config,
                 status=lambda message: status(f"Screen: {message}"))
             screen.start()
-        if config.get("auto"):
-            _resolve_host(config, status)
         while not stop_event.is_set():
             started = time.monotonic()
             try:

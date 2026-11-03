@@ -214,3 +214,40 @@ def test_resolve_host_keeps_configured_when_nothing_reachable():
          patch("precision_kvm.session._reachable", return_value=False):
         session_module._resolve_host(config, lambda message: None)
     assert config["host"] == "192.168.2.145"
+
+
+def test_side_channel_clients_start_after_host_resolution_and_share_config():
+    """A stale configured port must be corrected before the clipboard/screen
+    clients snapshot it, and later re-resolves must reach their retry loops."""
+    seen = {}
+    stop_event = session_module.threading.Event()
+
+    class SpyClient:
+        def __init__(self, config, status=lambda message: None, **kwargs):
+            seen["clipboard_port"] = config["port"]
+            seen["clipboard_config"] = config
+            self.thread = Mock()
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+    def fake_run_client(config, **kwargs):
+        # Simulate discovery correcting the port after the first failure.
+        config["port"] = 24819
+        stop_event.set()
+        raise OSError("refused")
+
+    with patch("precision_kvm.discovery.browse", return_value=[]), \
+         patch.object(session_module, "ClipboardClient", SpyClient), \
+         patch.object(session_module, "run_client", fake_run_client), \
+         patch.object(session_module.threading, "Thread", Mock()):
+        run_client_forever({"host": "192.168.50.1", "port": 24818, "auto": True,
+                            "clipboard_enabled": True, "clipboard_max_mb": 8,
+                            "screenshare": False},
+                           stop_event=stop_event, status=lambda message: None)
+    assert seen["clipboard_port"] == 24818
+    # The client holds the live dict: a later re-resolve reaches it.
+    assert seen["clipboard_config"]["port"] == 24819

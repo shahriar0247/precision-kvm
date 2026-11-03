@@ -270,7 +270,8 @@ class ScreenShareClient:
     on first use, not on pairing."""
 
     def __init__(self, config: dict, status: Callable[[str], None] = print):
-        self.config, self.status = dict(config), status
+        # Shared reference: discovery re-resolves must reach this retry loop.
+        self.config, self.status = config, status
         self.stopped = threading.Event()
         self.thread: threading.Thread | None = None
         self.channel: FramedSocket | None = None
