@@ -402,9 +402,10 @@ def _resolve_host(config: dict, status) -> None:
     port = int(service["port"])
     advertised = list(service.get("hosts") or ([service["host"]] if service.get("host") else []))
     configured = config.get("host")
-    # Multi-homed hosts advertise every address; only accept one that accepts a
-    # connection, with the configured host as the fallback.
-    for host in advertised + ([configured] if configured else []):
+    # The paired host is the user's explicit choice: probe it first, then the
+    # advertised addresses (multi-homed hosts advertise several; a reachable
+    # secondary interface must not override the configured direct link).
+    for host in ([configured] if configured else []) + advertised:
         if host and _reachable(str(host), port):
             if host != configured:
                 status(f"Discovered {service['name']} at {host}:{port}")

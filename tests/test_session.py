@@ -176,7 +176,17 @@ def _advertised(hosts, port=24819):
     return {"name": "host", "host": hosts[0], "hosts": hosts, "port": port, "tls": True}
 
 
-def test_resolve_host_prefers_reachable_advertised_address():
+def test_resolve_host_keeps_configured_host_over_reachable_advertised():
+    config = {"host": "192.168.50.1", "port": 24819}
+    with patch("precision_kvm.discovery.browse",
+               return_value=[_advertised(["192.168.50.1", "192.168.2.145"])]), \
+         patch("precision_kvm.session._reachable", return_value=True):
+        session_module._resolve_host(config, lambda message: None)
+    assert config["host"] == "192.168.50.1"
+    assert config["port"] == 24819
+
+
+def test_resolve_host_falls_back_to_reachable_advertised_address():
     config = {"host": "10.0.0.5", "port": 24819}
     with patch("precision_kvm.discovery.browse",
                return_value=[_advertised(["192.168.50.1", "192.168.2.145"])]), \

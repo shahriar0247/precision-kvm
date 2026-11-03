@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.9
+
+- Discovery no longer overrides the paired host: the configured address is
+  probed first, so a reachable secondary interface (Wi-Fi path) can no longer
+  silently replace the user's direct-link address — the flaky path was causing
+  input and clipboard links to drop seconds after connecting.
+
 ## 0.9.8
 
 - Fixed an unbounded thread leak in discovery: every reconnect attempt while
