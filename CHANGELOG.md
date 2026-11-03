@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1
+
+- Fixed host start failing with `could not convert string to float: '100%'` when the Screen share resolution scale had been saved — stream settings now tolerate persisted percent strings and junk values.
+
 ## 0.9.0
 
 - Screen share tab: watch the client machine's screen while you control it — a dedicated last tab shows a live feed alongside normal edge-crossing KVM control.

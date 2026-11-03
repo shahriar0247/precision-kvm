@@ -16,6 +16,13 @@ def test_normalize_cfg_clamps_ranges():
     assert normalize_cfg({}) == DEFAULT_CFG
 
 
+def test_normalize_cfg_accepts_percent_strings():
+    """UI comboboxes persist '75%' — normalize_cfg must not crash."""
+    cfg = normalize_cfg({"scale": "75%", "fps": "30", "kbps": "junk"})
+    assert cfg["scale"] == 0.75 and cfg["fps"] == 30
+    assert cfg["kbps"] == DEFAULT_CFG["kbps"]
+
+
 def test_jpeg_roundtrip_and_gray():
     from PIL import Image
     image = Image.new("RGB", (320, 200), (120, 40, 200))

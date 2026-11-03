@@ -24,17 +24,30 @@ DEFAULT_CFG = {"enabled": False, "fps": 15, "quality": 60, "scale": 1.0,
                "gray": False, "kbps": 8000, "monitor": 0}
 
 
+def _num(value, default: float) -> float:
+    """Coerce UI/persisted values — tolerates '75%' strings and junk."""
+    if isinstance(value, str) and value.strip().endswith("%"):
+        try:
+            return float(value.strip().rstrip("%")) / 100
+        except ValueError:
+            return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def normalize_cfg(values: dict) -> dict:
     """Clamp untrusted/UI control values into the valid ranges."""
     cfg = dict(DEFAULT_CFG)
     cfg.update({k: v for k, v in (values or {}).items() if k in DEFAULT_CFG})
     cfg["enabled"] = bool(cfg["enabled"])
     cfg["gray"] = bool(cfg["gray"])
-    cfg["fps"] = min(60, max(1, int(cfg["fps"])))
-    cfg["quality"] = min(95, max(10, int(cfg["quality"])))
-    cfg["scale"] = min(1.0, max(0.1, float(cfg["scale"])))
-    cfg["kbps"] = min(200_000, max(0, int(cfg["kbps"])))
-    cfg["monitor"] = max(0, int(cfg["monitor"]))
+    cfg["fps"] = min(60, max(1, int(_num(cfg["fps"], DEFAULT_CFG["fps"]))))
+    cfg["quality"] = min(95, max(10, int(_num(cfg["quality"], DEFAULT_CFG["quality"]))))
+    cfg["scale"] = min(1.0, max(0.1, _num(cfg["scale"], DEFAULT_CFG["scale"])))
+    cfg["kbps"] = min(200_000, max(0, int(_num(cfg["kbps"], DEFAULT_CFG["kbps"]))))
+    cfg["monitor"] = max(0, int(_num(cfg["monitor"], DEFAULT_CFG["monitor"])))
     return cfg
 
 

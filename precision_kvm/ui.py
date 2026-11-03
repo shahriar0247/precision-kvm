@@ -24,6 +24,7 @@ except ImportError:
 from .config import identity, load_settings, local_ip, save_json, state_dir, validate_settings
 from . import geometry, ui_common
 from .keymap import KEY_NAMES, MAC_KEY_NAMES, normalize_keymap
+from .screenshare import _num
 from .session import HostSession
 
 def _rounded(canvas, x0, y0, x1, y1, r, **kwargs):
@@ -224,7 +225,7 @@ class ControlPanel:
         self.field(screen, 3, "Resolution scale", "screen_scale",
                    ("100%", "75%", "50%", "25%", "10%"), host_only=True)
         self.variables["screen_scale"].set(
-            f"{round(float(self.settings.get('screen_scale', 1.0)) * 100)}%")
+            f"{round(_num(self.settings.get('screen_scale', 1.0), 1.0) * 100)}%")
         self.field(screen, 4, "Bitrate cap (kbps · 0 = unlimited)", "screen_kbps",
                    bounds=(0, 200000, 500), host_only=True)
         self.check(screen, 5, "Black && white (grayscale — smaller and faster)",
@@ -763,6 +764,7 @@ class ControlPanel:
     def save(self):
         try:
             self.settings = self.collect_settings()
+            self.settings["screen_scale"] = self._screen_cfg()["scale"]
             save_json(state_dir() / "settings.json", self.settings)
             self.status.set("Settings saved • start the host to apply")
         except (ValueError, TypeError, tk.TclError) as exc:
