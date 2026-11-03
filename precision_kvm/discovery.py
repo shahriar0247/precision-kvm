@@ -12,7 +12,13 @@ def _addresses() -> list[bytes]:
     found = {answer[4][0] for answer in
              socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)}
     found.discard("127.0.0.1")
-    packed = [socket.inet_aton(str(address)) for address in sorted(found)]
+    try:
+        from .config import local_ip
+        primary = local_ip("8.8.8.8")
+    except OSError:
+        primary = ""
+    ordered = sorted(found, key=lambda address: address != primary)
+    packed = [socket.inet_aton(str(address)) for address in ordered]
     return packed or [socket.inet_aton("127.0.0.1")]
 
 

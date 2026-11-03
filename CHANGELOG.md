@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.5
+
+- Discovery advertises the primary LAN address first: multi-homed hosts
+  (virtual/WSL/direct-link adapters) no longer lead clients to probe dead
+  interface addresses before reaching the usable one.
+
 ## 0.9.4
 
 - Fixed auto-discovery on multi-homed hosts: the client now probes every
