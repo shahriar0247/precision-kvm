@@ -55,6 +55,29 @@ DISPLAY_OPTIONS = {
 }
 
 
+class ScrollFrame(ttk.Frame):
+    """A vertically scrollable tab page; place controls in `.body`."""
+
+    def __init__(self, parent, padding):
+        super().__init__(parent)
+        self.canvas = tk.Canvas(self, bg="#0d1420", highlightthickness=0, bd=0)
+        self.scroll = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.body = ttk.Frame(self.canvas, padding=padding)
+        self._window = self.canvas.create_window((0, 0), window=self.body, anchor="nw")
+        self.canvas.configure(yscrollcommand=self.scroll.set)
+        self.body.bind("<Configure>", self._resize)
+        self.canvas.bind("<Configure>",
+                         lambda event: self.canvas.itemconfigure(self._window, width=event.width))
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.scroll.pack(side="right", fill="y")
+
+    def _resize(self, _event=None):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def wheel(self, delta):
+        self.canvas.yview_scroll(int(-delta / 120), "units")
+
+
 class ControlPanel:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -64,11 +87,13 @@ class ControlPanel:
         self.controls: list[ttk.Widget] = []
         self.variables: dict[str, tk.Variable] = {}
         self._host_widgets: list[tk.Widget] = []
+        self._wrap_labels: list[ttk.Label] = []
+        self._deploy_window: tk.Toplevel | None = None
         self.client = ui_common.ClientRunner(self.report_status)
         self.keymap = dict(self.settings["keymap"])
         root.title("PrecisionKVM — Input sharing")
         root.geometry("960x900")
-        root.minsize(900, 820)
+        root.minsize(660, 540)
         bg, card, edge = "#0d1420", "#141d2c", "#24344a"
         ink, muted, accent = "#e6edf7", "#8b98ad", "#3fd3bd"
         root.configure(bg=bg)
@@ -139,14 +164,24 @@ class ControlPanel:
                             value=value, command=self._role_changed).pack(side="left", padx=(14, 0))
         notebook = ttk.Notebook(panel, style="Panel.TNotebook")
         notebook.pack(fill="both", expand=True)
+        self._scrollframes: list[ScrollFrame] = []
         connection, inputs, keys, sharing, tweaks, wtweaks, logs = (
             ttk.Frame(notebook, padding=18) for _ in range(7))
+        bodies = []
         for frame, title in ((connection, "Connection"), (inputs, "Mouse & gestures"),
                              (keys, "Key remapping"), (tweaks, "Mac Tweaks"),
                              (wtweaks, "Windows Tweaks"),
                              (sharing, "Clipboard & safety"), (logs, "Activity log")):
-            notebook.add(frame, text=title)
-            frame.columnconfigure(1, weight=1)
+            if frame is logs:
+                notebook.add(logs, text=title)
+                logs.columnconfigure(1, weight=1)
+                continue
+            scroller = ScrollFrame(notebook, padding=18)
+            notebook.add(scroller, text=title)
+            scroller.body.columnconfigure(1, weight=1)
+            self._scrollframes.append(scroller)
+            bodies.append(scroller.body)
+        connection, inputs, keys, tweaks, wtweaks, sharing = bodies
         logs.rowconfigure(0, weight=1)
         logs.columnconfigure(0, weight=1)
         self.log_text = tk.Text(logs, wrap="none", height=16, bg=card, fg=ink,
@@ -200,7 +235,19 @@ class ControlPanel:
         self.controls.extend((add_btn, rm_btn, zi_btn, zo_btn, fit_btn))
         self._host_widgets.extend((tools,))
         self.field(connection, 2, "Client address", "peer", host_only=True)
-        self.field(connection, 3, "Client SSH target", "ssh_target", host_only=True)
+        ssh_caption = ttk.Label(connection, text="Client SSH target")
+        ssh_caption.grid(row=3, column=0, sticky="w", pady=7)
+        ssh_row = ttk.Frame(connection)
+        ssh_row.grid(row=3, column=1, sticky="ew", padx=(20, 0), pady=7)
+        ssh_row.columnconfigure(0, weight=1)
+        self.variables["ssh_target"] = tk.StringVar(value=self.settings["ssh_target"])
+        ssh_entry = ttk.Entry(ssh_row, textvariable=self.variables["ssh_target"])
+        ssh_entry.grid(row=0, column=0, sticky="ew")
+        ssh_deploy = ttk.Button(ssh_row, text="Install via SSH…",
+                                command=self.deploy_dialog)
+        ssh_deploy.grid(row=0, column=1, padx=(8, 0))
+        self.controls.extend((ssh_entry, ssh_deploy))
+        self._host_widgets.extend((ssh_caption, ssh_row))
         self.field(connection, 4, "Mouse update limit (Hz)", "mouse_hz",
                    ("120", "144", "240", "500", "1000"), host_only=True)
         self.field(connection, 5, "Host port", "port", bounds=(1024, 65533, 1), host_only=True)
@@ -225,9 +272,10 @@ class ControlPanel:
         self.client_frame.grid(row=10, column=0, columnspan=2, sticky="ew", pady=(14, 0))
         self.client_frame.columnconfigure(1, weight=1)
         self.pair_status = tk.StringVar()
-        ttk.Label(self.client_frame, textvariable=self.pair_status,
-                  style="Muted.TLabel", wraplength=720, justify="left"
-                  ).grid(row=0, column=0, columnspan=2, sticky="w")
+        pair_label = ttk.Label(self.client_frame, textvariable=self.pair_status,
+                               style="Muted.TLabel", wraplength=720, justify="left")
+        pair_label.grid(row=0, column=0, columnspan=2, sticky="w")
+        self._wrap_labels.append(pair_label)
         ttk.Button(self.client_frame, text="Choose pairing file…",
                    command=self.import_pairing_file).grid(row=1, column=0, sticky="w", pady=8)
         self.pair_text = tk.Text(self.client_frame, height=4, bg=card, fg=ink,
@@ -330,16 +378,37 @@ class ControlPanel:
         self.controls.append(save)
         self.status = tk.StringVar(value="Stopped • local input active")
         self.stats = tk.StringVar(value="No session measurements yet")
-        ttk.Label(panel, textvariable=self.status, wraplength=850).pack(anchor="w")
-        ttk.Label(panel, textvariable=self.stats, style="Muted.TLabel", wraplength=850).pack(anchor="w", pady=5)
+        status_label = ttk.Label(panel, textvariable=self.status, wraplength=850)
+        status_label.pack(anchor="w")
+        stats_label = ttk.Label(panel, textvariable=self.stats, style="Muted.TLabel",
+                                wraplength=850)
+        stats_label.pack(anchor="w", pady=5)
+        self._wrap_labels.extend((status_label, stats_label))
         self._rtt: collections.deque[float] = collections.deque(maxlen=240)
         self.latency = tk.Canvas(panel, height=46, bg=card, highlightthickness=0)
         self.latency.pack(fill="x", pady=(6, 0))
         self.latency.bind("<Configure>", lambda _e: self._draw_latency())
         self.canvas.bind("<Configure>", lambda event: self.draw_layout())
         root.protocol("WM_DELETE_WINDOW", self.close)
+        root.bind_all("<MouseWheel>", self._wheel_route)
+        panel.bind("<Configure>", lambda event: self._fit_text(event.width))
         self._role_changed()
         root.after(100, self.poll)
+
+    def _fit_text(self, width):
+        wrap = max(280, width - 110)
+        for label in self._wrap_labels:
+            label.configure(wraplength=wrap)
+
+    def _wheel_route(self, event):
+        widget = self.root.winfo_containing(*self.root.winfo_pointerxy())
+        while widget is not None:
+            if widget is self.canvas:
+                return  # the layout canvas owns its wheel (zoom)
+            if isinstance(widget, ScrollFrame):
+                widget.wheel(event.delta)
+                return
+            widget = widget.master
 
     def field(self, parent, row, label, key, values=None, bounds=None, host_only=False):
         options = DISPLAY_OPTIONS.get(key, {})
@@ -369,10 +438,11 @@ class ControlPanel:
         if host_only:
             self._host_widgets.append(control)
 
-    @staticmethod
-    def note(parent, row, text):
-        ttk.Label(parent, text=text, style="Muted.TLabel", wraplength=780,
-                  justify="left").grid(row=row, column=0, columnspan=2, sticky="w", pady=(12, 8))
+    def note(self, parent, row, text):
+        label = ttk.Label(parent, text=text, style="Muted.TLabel", wraplength=780,
+                          justify="left")
+        label.grid(row=row, column=0, columnspan=2, sticky="w", pady=(12, 8))
+        self._wrap_labels.append(label)
 
     def refresh_keymap(self):
         for item in self.key_table.get_children():
@@ -474,6 +544,126 @@ class ControlPanel:
             self.status.set("Pairing exported • import privately in the client app")
         except (OSError, ValueError) as exc:
             self.status.set(f"Could not export pairing: {exc}")
+
+    def deploy_dialog(self):
+        if self._deploy_window is not None and self._deploy_window.winfo_exists():
+            self._deploy_window.lift()
+            return
+        win = tk.Toplevel(self.root)
+        self._deploy_window = win
+        win.title("Install client via SSH")
+        win.configure(bg="#0d1420")
+        win.resizable(False, False)
+        win.transient(self.root)
+        body = ttk.Frame(win, padding=20)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(1, weight=1)
+        ttk.Label(body, text="Push the PrecisionKVM client to another machine over SSH. "
+                  "It installs itself if missing, then connects back to this host.",
+                  style="Muted.TLabel", wraplength=380, justify="left"
+                  ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
+        ttk.Label(body, text="SSH target").grid(row=1, column=0, sticky="w", pady=6)
+        target_var = tk.StringVar(value=self.variables["ssh_target"].get())
+        target_entry = ttk.Entry(body, textvariable=target_var, width=34)
+        target_entry.grid(row=1, column=1, sticky="ew", padx=(16, 0), pady=6)
+        ttk.Label(body, text="SSH port").grid(row=2, column=0, sticky="w", pady=6)
+        port_var = tk.StringVar(value="22")
+        ttk.Spinbox(body, textvariable=port_var, from_=1, to=65535,
+                    width=8).grid(row=2, column=1, sticky="w", padx=(16, 0), pady=6)
+        ttk.Label(body, text="Password").grid(row=3, column=0, sticky="w", pady=6)
+        password_var = tk.StringVar()
+        password_entry = ttk.Entry(body, textvariable=password_var, show="•", width=34)
+        password_entry.grid(row=3, column=1, sticky="ew", padx=(16, 0), pady=6)
+        ttk.Label(body, text="Leave empty to use your saved SSH keys — you'll be "
+                  "asked for a password only if the machine rejects them.",
+                  style="Muted.TLabel", wraplength=380, justify="left"
+                  ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 10))
+        row = ttk.Frame(body)
+        row.grid(row=5, column=0, columnspan=2, sticky="e", pady=(6, 0))
+        ttk.Button(row, text="Cancel", command=win.destroy).pack(side="right")
+        go = ttk.Button(row, text="Install && connect", style="Accent.TButton",
+                        command=lambda: self._deploy_start(
+                            win, target_var.get().strip(),
+                            port_var.get().strip(), password_var.get() or None, True))
+        go.pack(side="right", padx=(0, 10))
+        ttk.Button(row, text="Connect only",
+                   command=lambda: self._deploy_start(
+                       win, target_var.get().strip(),
+                       port_var.get().strip(), password_var.get() or None, False)
+                   ).pack(side="right")
+        win.bind("<Return>", lambda _e: go.invoke())
+        (target_entry if not target_var.get() else password_entry).focus_set()
+        win.grab_set()
+
+    def _deploy_start(self, win, target, port, password, install=True):
+        try:
+            settings = dict(self.settings)
+            settings["port"] = int(self.variables["port"].get())
+            settings["tls"] = self.variables["tls"].get()
+            settings["clipboard_enabled"] = self.variables["clipboard_enabled"].get()
+            ssh_port = int(port)
+            if not 1 <= ssh_port <= 65535:
+                raise ValueError
+            self.variables["ssh_target"].set(target)
+            if "@" in target:
+                self.variables["peer"].set(target.split("@", 1)[1])
+        except (ValueError, tk.TclError):
+            self.status.set("Enter a valid user@host target and SSH port")
+            return
+        win.destroy()
+        threading.Thread(target=self._deploy_worker,
+                         args=(target, ssh_port, settings, password, install),
+                         daemon=True, name="kvm-deploy").start()
+
+    def _deploy_worker(self, target, ssh_port, settings, password, install):
+        from . import deploy
+        def status(message):
+            self.root.after(0, self.report_status, message)
+        try:
+            deploy.deploy(target, ssh_port, settings, status,
+                          password=password, ask_password=self._ask_password,
+                          install=install)
+        except Exception as exc:
+            status(f"SSH install failed: {exc}")
+
+    def _ask_password(self, prompt):
+        """Runs on the deploy worker; asks on the Tk thread and waits."""
+        answer: dict[str, str | None] = {"password": None}
+        ready = threading.Event()
+
+        def show():
+            win = tk.Toplevel(self.root)
+            win.title("SSH password")
+            win.configure(bg="#0d1420")
+            win.resizable(False, False)
+            win.transient(self.root)
+            body = ttk.Frame(win, padding=20)
+            body.pack(fill="both", expand=True)
+            ttk.Label(body, text=prompt, wraplength=340, justify="left"
+                      ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+            entry = ttk.Entry(body, show="•", width=30)
+            entry.grid(row=1, column=0, columnspan=2, sticky="ew")
+
+            def done(value):
+                answer["password"] = value
+                ready.set()
+                win.destroy()
+
+            row = ttk.Frame(body)
+            row.grid(row=2, column=0, columnspan=2, sticky="e", pady=(14, 0))
+            ttk.Button(row, text="Cancel",
+                       command=lambda: done(None)).pack(side="right")
+            ok = ttk.Button(row, text="Connect", style="Accent.TButton",
+                            command=lambda: done(entry.get() or None))
+            ok.pack(side="right", padx=(0, 10))
+            win.bind("<Return>", lambda _e: done(entry.get() or None))
+            win.protocol("WM_DELETE_WINDOW", lambda: done(None))
+            win.grab_set()
+            entry.focus_set()
+
+        self.root.after(0, show)
+        ready.wait()
+        return answer["password"]
 
     def save(self):
         try:
