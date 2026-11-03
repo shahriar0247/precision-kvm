@@ -84,8 +84,9 @@ class _WindowsWake:
 
 
 class FramedSocket:
-    def __init__(self, sock: socket.socket):
+    def __init__(self, sock: socket.socket, max_frame: int = MAX_FRAME):
         self.sock = sock
+        self.max_frame = max_frame
         self._send_lock = threading.Lock()
         self._io_lock = threading.Lock()
         self._tls = isinstance(sock, ssl.SSLSocket)
@@ -118,7 +119,15 @@ class FramedSocket:
 
     def send(self, message: dict) -> None:
         payload = json.dumps(message, separators=(",", ":"), allow_nan=False).encode()
-        if len(payload) > MAX_FRAME:
+        self._write(payload)
+
+    def send_binary(self, payload: bytes) -> None:
+        """Raw length-prefixed payload (e.g. video frames); same 4-byte header
+        as send(), so each direction on a channel carries exactly one format."""
+        self._write(bytes(payload))
+
+    def _write(self, payload: bytes) -> None:
+        if len(payload) > self.max_frame:
             raise ProtocolError("Frame exceeds size limit")
         with self._send_lock:
             wire = struct.pack("!I", len(payload)) + payload
@@ -143,16 +152,19 @@ class FramedSocket:
         return bytes(result)
 
     def recv(self) -> dict:
-        size = struct.unpack("!I", self._read(4))[0]
-        if not 0 < size <= MAX_FRAME:
-            raise ProtocolError("Invalid frame length")
         try:
-            message = json.loads(self._read(size))
+            message = json.loads(self.recv_binary())
         except (ValueError, UnicodeDecodeError) as exc:
             raise ProtocolError("Invalid JSON") from exc
         if not isinstance(message, dict):
             raise ProtocolError("Expected object")
         return message
+
+    def recv_binary(self) -> bytes:
+        size = struct.unpack("!I", self._read(4))[0]
+        if not 0 < size <= self.max_frame:
+            raise ProtocolError("Invalid frame length")
+        return self._read(size)
 
     def close(self) -> None:
         with self._io_lock:

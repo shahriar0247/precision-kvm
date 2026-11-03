@@ -19,6 +19,7 @@ from .transport import (BackpressureError, EventBuffer, FramedSocket, PlainListe
 
 if TYPE_CHECKING:
     from .discovery import Advertiser
+    from .screenshare import ScreenShareServer
     from .windows import WindowsCapture
 
 
@@ -53,6 +54,7 @@ class HostSession:
         self.remote_process: subprocess.Popen | None = None
         self._remote_lock = threading.Lock()
         self.clipboard: ClipboardServer | None = None
+        self.screen: ScreenShareServer | None = None
         self.advertiser: Advertiser | None = None
         self.emergency_reason = ""
 
@@ -71,6 +73,8 @@ class HostSession:
             self.capture.stop()
         if self.clipboard:
             self.clipboard.stop()
+        if self.screen:
+            self.screen.stop()
         if self.advertiser:
             self.advertiser.stop()
         if self.listener:
@@ -209,6 +213,15 @@ class HostSession:
                     max_bytes=int(self.settings.get("clipboard_max_mb", 128)) * 1024 * 1024,
                     status=lambda message: self.status(f"Clipboard: {message}"))
                 self.clipboard.start()
+            if self.settings.get("screen_share", True):
+                from .screenshare import SCREEN_PORT_OFFSET, ScreenShareServer
+                self.screen = ScreenShareServer(
+                    cert if tls else None, key if tls else None, token,
+                    port=int(self.settings["port"]) + SCREEN_PORT_OFFSET,
+                    cfg={name[7:]: self.settings[name]
+                         for name in self.settings if name.startswith("screen_")},
+                    status=lambda message: self.status(f"Screen: {message}"))
+                self.screen.start()
             peers = {name: (rect["x"], rect["y"], rect["w"], rect["h"])
                      for name, rect in (self.settings.get("peers") or {}).items()}
             capture_kwargs = dict(side=self.settings["side"],
@@ -274,6 +287,9 @@ class HostSession:
                 self.capture = None
             if self.clipboard:
                 self.clipboard.stop()
+            if self.screen:
+                self.screen.stop()
+                self.screen = None
             if self.advertiser:
                 self.advertiser.stop()
                 self.advertiser = None
@@ -339,12 +355,18 @@ def run_client_forever(config: dict, stop_event=None, status=print):
     """Retry on a one-second start-to-start cadence without overlapping attempts."""
     stop_event = stop_event if stop_event is not None else threading.Event()
     clipboard = None
+    screen = None
     try:
         if config.get("clipboard_enabled", bool(config.get("host"))):
             clipboard = ClipboardClient(config,
                 max_bytes=int(config.get("clipboard_max_mb", 128)) * 1024 * 1024,
                 status=lambda message: status(f"Clipboard: {message}"))
             clipboard.start()
+        if config.get("screenshare", True) and config.get("host"):
+            from .screenshare import ScreenShareClient
+            screen = ScreenShareClient(config,
+                status=lambda message: status(f"Screen: {message}"))
+            screen.start()
         while not stop_event.is_set():
             started = time.monotonic()
             if config.get("auto"):
@@ -356,6 +378,8 @@ def run_client_forever(config: dict, stop_event=None, status=print):
             if stop_event.wait(max(0.0, 1.0 - (time.monotonic() - started))):
                 break
     finally:
+        if screen:
+            screen.stop()
         if clipboard:
             clipboard.stop()
 

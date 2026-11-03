@@ -17,7 +17,8 @@ if os.environ.get("PRECISION_KVM_OPENSSL_LICENSE"):
     datas.append((os.environ["PRECISION_KVM_OPENSSL_LICENSE"], "licenses/OpenSSL"))
 binaries = []
 hiddenimports = ["PIL.Image", "PIL.PngImagePlugin", "PIL.TiffImagePlugin",
-                 "zeroconf", "tkinter", "paramiko"]
+                 "zeroconf", "tkinter", "paramiko", "mss", "mss.windows",
+                 "mss.darwin", "mss.linux"]
 excludes = [
     "pandas", "scipy", "torch", "torchvision", "torchaudio", "numba", "llvmlite",
     "pyarrow", "botocore", "boto3", "s3transfer", "sqlalchemy", "openpyxl",

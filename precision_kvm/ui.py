@@ -16,6 +16,10 @@ try:
     from PIL import Image, ImageDraw
 except ImportError:  # Tray support is optional; windowed mode still works.
     pystray = None
+try:
+    from PIL import ImageTk
+except ImportError:
+    ImageTk = None  # type: ignore[assignment]
 
 from .config import identity, load_settings, local_ip, save_json, state_dir, validate_settings
 from . import geometry, ui_common
@@ -165,13 +169,14 @@ class ControlPanel:
         notebook = ttk.Notebook(panel, style="Panel.TNotebook")
         notebook.pack(fill="both", expand=True)
         self._scrollframes: list[ScrollFrame] = []
-        connection, inputs, keys, sharing, tweaks, wtweaks, logs = (
-            ttk.Frame(notebook, padding=18) for _ in range(7))
+        connection, inputs, keys, sharing, tweaks, wtweaks, logs, screen = (
+            ttk.Frame(notebook, padding=18) for _ in range(8))
         bodies = []
         for frame, title in ((connection, "Connection"), (inputs, "Mouse & gestures"),
                              (keys, "Key remapping"), (tweaks, "Mac Tweaks"),
                              (wtweaks, "Windows Tweaks"),
-                             (sharing, "Clipboard & safety"), (logs, "Activity log")):
+                             (sharing, "Clipboard & safety"), (logs, "Activity log"),
+                             (screen, "Screen share")):
             if frame is logs:
                 notebook.add(logs, text=title)
                 logs.columnconfigure(1, weight=1)
@@ -181,7 +186,7 @@ class ControlPanel:
             scroller.body.columnconfigure(1, weight=1)
             self._scrollframes.append(scroller)
             bodies.append(scroller.body)
-        connection, inputs, keys, tweaks, wtweaks, sharing = bodies
+        connection, inputs, keys, tweaks, wtweaks, sharing, screen = bodies
         logs.rowconfigure(0, weight=1)
         logs.columnconfigure(0, weight=1)
         self.log_text = tk.Text(logs, wrap="none", height=16, bg=card, fg=ink,
@@ -197,6 +202,56 @@ class ControlPanel:
         ttk.Button(log_buttons, text="Open log folder",
                    command=lambda: subprocess.Popen(["explorer", str(state_dir())])).pack(side="left", padx=8)
         self.note(logs, 2, "Host events appear live while sharing; Refresh reloads the full log file.")
+        self._screen_on = tk.BooleanVar(value=self.settings.get("screen_enabled", False))
+        self.variables["screen_enabled"] = self._screen_on
+        self.variables["screen_share"] = tk.BooleanVar(value=self.settings.get("screen_share", True))
+        self._photo: object = None
+        srow = ttk.Frame(screen)
+        srow.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
+        start = ttk.Button(srow, text="Start stream", style="Accent.TButton",
+                           command=self._screen_start)
+        start.pack(side="left")
+        stopp = ttk.Button(srow, text="Stop stream", style="Stop.TButton",
+                           command=self._screen_stop)
+        stopp.pack(side="left", padx=8)
+        restart = ttk.Button(srow, text="Restart", command=self._screen_restart)
+        restart.pack(side="left")
+        self.controls.extend((start, stopp, restart))
+        self.field(screen, 1, "Frames per second", "screen_fps",
+                   ("1", "5", "10", "15", "24", "30", "60"), host_only=True)
+        self.field(screen, 2, "JPEG quality (10–95)", "screen_quality",
+                   bounds=(10, 95, 5), host_only=True)
+        self.field(screen, 3, "Resolution scale", "screen_scale",
+                   ("100%", "75%", "50%", "25%", "10%"), host_only=True)
+        self.variables["screen_scale"].set(
+            f"{round(float(self.settings.get('screen_scale', 1.0)) * 100)}%")
+        self.field(screen, 4, "Bitrate cap (kbps · 0 = unlimited)", "screen_kbps",
+                   bounds=(0, 200000, 500), host_only=True)
+        self.check(screen, 5, "Black && white (grayscale — smaller and faster)",
+                   "screen_gray", host_only=True)
+        self.field(screen, 6, "Client monitor (0 = whole desktop)", "screen_monitor",
+                   bounds=(0, 7, 1), host_only=True)
+        for key in ("screen_fps", "screen_quality", "screen_scale", "screen_kbps",
+                    "screen_gray", "screen_monitor"):
+            self.variables[key].trace_add("write", lambda *_: self._screen_push())
+        self.video = tk.Label(screen, bg="#0b0d12", anchor="center",
+                              text="No stream — start the host, connect a client,\n"
+                                   "then press Start stream",
+                              fg="#8b98ad", font=("Segoe UI", 10))
+        self.video.grid(row=7, column=0, columnspan=2, sticky="nsew", pady=12)
+        screen.rowconfigure(7, weight=1)
+        self.screen_stats = tk.StringVar(value="Screen share is idle")
+        stats_label = ttk.Label(screen, textvariable=self.screen_stats,
+                                style="Muted.TLabel", wraplength=760)
+        stats_label.grid(row=8, column=0, columnspan=2, sticky="w")
+        self._wrap_labels.append(stats_label)
+        self.note(screen, 9, "View-only — the feed never moves your mouse; input still "
+                  "crosses at the screen edge. The client captures only while streaming "
+                  "is on; macOS asks for Screen Recording once, Windows needs nothing.\n\n"
+                  "Tuning: lower quality/scale/fps or grayscale for slow links; raise the "
+                  "bitrate cap for sharpness on LAN.")
+        self._screen_widgets = [w for w in (srow, self.video, stats_label)]
+        self._host_widgets.extend(self._screen_widgets)
         self.canvas = tk.Canvas(connection, height=230, bg=card, bd=0,
                                 relief="flat", highlightthickness=0)
         self.canvas.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
@@ -665,6 +720,46 @@ class ControlPanel:
         ready.wait()
         return answer["password"]
 
+    def _screen_cfg(self):
+        def number(key, default):
+            try:
+                return float(self.variables[key].get())
+            except (ValueError, tk.TclError):
+                return default
+        try:
+            scale = float(str(self.variables["screen_scale"].get()).rstrip("%")) / 100
+        except (ValueError, tk.TclError):
+            scale = 1.0
+        return {"enabled": bool(self._screen_on.get()),
+                "fps": number("screen_fps", 15), "quality": number("screen_quality", 60),
+                "scale": scale, "gray": bool(self.variables["screen_gray"].get()),
+                "kbps": number("screen_kbps", 8000),
+                "monitor": int(number("screen_monitor", 0))}
+
+    def _screen_push(self):
+        if self.session and self.session.screen:
+            self.session.screen.set_config(self._screen_cfg())
+
+    def _screen_start(self):
+        self._screen_on.set(True)
+        self._screen_push()
+        connected = (self.session and self.session.screen
+                     and self.session.screen.client_connected)
+        if not connected:
+            self.screen_stats.set("Waiting for the client's screen channel — "
+                                  "start sharing and make sure a client is connected")
+
+    def _screen_stop(self):
+        self._screen_on.set(False)
+        self._screen_push()
+        self.screen_stats.set("Screen share is idle")
+
+    def _screen_restart(self):
+        self._screen_on.set(True)
+        if self.session and self.session.screen:
+            self.session.screen.set_config({"enabled": False})
+            self.root.after(400, self._screen_push)
+
     def save(self):
         try:
             self.settings = self.collect_settings()
@@ -978,6 +1073,24 @@ class ControlPanel:
         canvas.create_text(w - 8, 36, anchor="e", text="round-trip",
                            fill="#8b98ad", font=("Segoe UI", 8))
 
+    def _poll_screen(self):
+        if not self.session or not self.session.screen:
+            return
+        image, stats = self.session.screen.poll_frame()
+        if image is not None and ImageTk is not None:
+            image.thumbnail((900, 540))
+            photo = ImageTk.PhotoImage(image)
+            self._photo = photo  # keep a reference or Tk drops the image
+            self.video.configure(image=photo, text="")
+        if stats.get("size"):
+            w, h = stats["size"]
+            self.screen_stats.set(f"{w}×{h} @ {stats['fps']:.0f} fps · "
+                                  f"{stats['mbps']:.1f} Mbps")
+        elif stats.get("connected"):
+            self.screen_stats.set("Screen channel connected — press Start stream")
+        elif self._screen_on.get():
+            self.screen_stats.set("Waiting for the client's screen channel…")
+
     def poll(self):
         while not self.messages.empty():
             self.status.set(self.messages.get_nowait())
@@ -991,6 +1104,8 @@ class ControlPanel:
                 self._draw_latency()
             if self.session.thread and not self.session.thread.is_alive():
                 self.set_running(False)
+        if self.session and self.session.screen:
+            self._poll_screen()
         if self.client.active:
             self.stats.set("Client connected to host — input is controlled remotely")
         self.root.after(100, self.poll)
