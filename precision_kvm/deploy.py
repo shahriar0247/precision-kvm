@@ -44,24 +44,28 @@ def asset_name(os_name: str, arch: str) -> str:
 
 
 def mac_install_command(url: str) -> str:
-    return ("mkdir -p \"$HOME/Applications\" && "
-            f"curl -fL --retry 2 -o /tmp/pkvm-install.zip '{url}' && "
-            "unzip -oq /tmp/pkvm-install.zip -d \"$HOME/Applications\" && "
-            "rm -f /tmp/pkvm-install.zip && "
-            f"xattr -dr com.apple.quarantine \"{MAC_APP}\" 2>/dev/null; echo installed")
+    return ("set -e; mkdir -p \"$HOME/Applications\"; "
+            f"curl -fL --retry 2 -o /tmp/pkvm-install.zip '{url}'; "
+            "unzip -oq /tmp/pkvm-install.zip -d \"$HOME/Applications\"; "
+            "rm -f /tmp/pkvm-install.zip; "
+            f"xattr -dr com.apple.quarantine \"{MAC_APP}\" 2>/dev/null || true; "
+            "echo installed")
 
 
 def mac_start_command() -> str:
-    return (f"pkill -f '{MAC_BIN}' 2>/dev/null; sleep 1; "
+    match = "'[P]recisionKVM.app/Contents/MacOS/PrecisionKVM'"
+    return (f"pkill -f {match} 2>/dev/null; sleep 1; "
             f"nohup \"{MAC_BIN}\" client --config \"{MAC_CONFIG_DIR}/client.json\" "
             f">\"{MAC_CONFIG_DIR}/client.log\" 2>&1 & "
-            "sleep 1; pgrep -f 'Contents/MacOS/PrecisionKVM' >/dev/null && echo running")
+            f"sleep 1; if pgrep -f {match} >/dev/null; "
+            "then echo running; else echo not running; fi")
 
 
 def win_install_command(url: str) -> str:
     return ("powershell -NoProfile -ExecutionPolicy Bypass -Command \""
             "curl.exe -fL --retry 2 -o $env:TEMP\\pkvm-install.zip "
             f"'{url}' | Out-Null; "
+            "if ($LASTEXITCODE) { exit $LASTEXITCODE }; "
             "Expand-Archive -Force -LiteralPath $env:TEMP\\pkvm-install.zip "
             "-DestinationPath $env:LOCALAPPDATA\\Programs; "
             "Remove-Item $env:TEMP\\pkvm-install.zip; "
@@ -76,12 +80,13 @@ def win_start_command() -> str:
             f"-ArgumentList 'client','--config','{WIN_CONFIG}' -WindowStyle Hidden; "
             "Start-Sleep -Seconds 2; "
             "if (Get-Process PrecisionKVM -ErrorAction SilentlyContinue) "
-            "{ 'running' } else { exit 1 }\"")
+            "{ 'running' } else { 'not running' }\"")
 
 
 def installed_probe(os_name: str) -> str:
     if os_name == "darwin":
-        return f"test -x \"{MAC_BIN}\" && echo present"
+        return (f"if test -x \"{MAC_BIN}\"; then echo present; "
+                "else echo missing; fi")
     return ("powershell -NoProfile -Command \""
             f"if (Test-Path '{WIN_EXE}') {{ 'present' }}\"")
 
@@ -90,7 +95,7 @@ def version_probe(os_name: str) -> str:
     """Print the installed bundle's version, empty when unknown."""
     if os_name == "darwin":
         return ("/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "
-                f"\"{MAC_APP}/Contents/Info.plist\" 2>/dev/null")
+                f"\"{MAC_APP}/Contents/Info.plist\" 2>/dev/null || true")
     return ("powershell -NoProfile -Command \""
             f"Get-Content '{WIN_DIR}\\VERSION.txt' -ErrorAction SilentlyContinue\"")
 
