@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.0
+
+- Install & connect over SSH: put `user@host` in the Client SSH target field, click **Install via SSH…** and the client installs itself on the remote machine (or upgrades it when it's running an older build), writes pairing, and starts connecting back — Windows clients need nothing else, macOS asks for Accessibility once.
+- Connect only: the same dialog offers a plain connect that skips downloads entirely and just (re)writes pairing and launches the client.
+- SSH keys are tried first; a password prompt appears only when the remote rejects them.
+- Remote version awareness: deploying against an older client auto-upgrades it to the bundled release.
+- Scrollable settings: every tab scrolls when the window is too small, so the panel works on short displays; the minimum size dropped to 660×540.
+- Design polish: notes and status text re-wrap to the real window width instead of clipping.
+
 ## 0.7.0
 
 - Multiple simultaneous clients: the host accepts and serves many peers at once; each connects to its own box in the layout.

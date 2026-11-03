@@ -33,7 +33,7 @@ Native packages include everything — no Python needed. Each ships a `.sha256` 
 ## 60-second setup
 
 1. **PC:** unzip, run `PrecisionKVM.exe`, keep **Host**. The diagram shows your real monitors — drag the client box to any edge (sides, top, bottom, corners); it snaps flush.
-2. **PC:** click **Export pairing file**, copy it to the Mac.
+2. **PC:** click **Export pairing file**, copy it to the Mac. *Or skip the USB dance:* put `user@host` in **Client SSH target**, hit **Install via SSH…**, and the client installs, pairs and starts itself — upgrades included when it's behind.
 3. **Mac:** open `PrecisionKVM.app` (right-click → Open), import the pairing file, grant Accessibility.
 4. Press **Start sharing** and slide through the edge.
 
@@ -50,6 +50,7 @@ Either machine can host or client — flip the role picker at the top of the pan
 - **Gestures** — desktop-switch shortcuts bridge to Mission Control; experimental 4-finger swipe recognition.
 - **Live latency graph** — the panel shows the actual round-trip time while you share.
 - **Multi-client, real topology** — the canvas maps your actual displays; drop clients on any edge or corner and cross into the one that sits there. Zoom, pan, rename inline, add as many as you like.
+- **Zero-touch clients over SSH** — one button installs the client on a Mac or PC, pairs it, upgrades it when it's behind, and starts it connecting back. Keys first, password prompt only if needed.
 - **Per-OS client tweaks** — Mac clients get smooth scrolling, Home/End and word-navigation; Windows clients can drop "Enhance pointer precision" while controlled and lock when you cross back.
 - **Real security** — pairing token + pinned certificate over TLS; toggle off only on a trusted wire. mDNS discovery, configurable port.
 - **Tray + login startup** — close the window, it keeps sharing.
