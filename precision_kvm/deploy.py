@@ -221,8 +221,9 @@ def deploy(target: str, ssh_port: int, settings: dict, status: Callable[[str], N
         status("Writing pairing file…")
         _exec(ssh, config_sink(os_name), status, stdin=json.dumps(config))
         status("Starting the client…")
-        command = mac_start_command if os_name == "darwin" else win_start_command
-        out = _exec(ssh, command(), status)
+        start_command = (mac_start_command if os_name == "darwin"
+                         else win_start_command)()
+        out = _exec(ssh, start_command, status)
         if "running" not in out:
             raise RuntimeError("client process did not stay up — check the remote log")
         status(f"Done — {host} client is starting and will connect to {host_ip}")
