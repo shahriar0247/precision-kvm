@@ -109,3 +109,40 @@ class GeometryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OvershootTest(unittest.TestCase):
+    """Hook-reported positions can overshoot the boundary — a fast push must
+    still cross without needing an event at exactly x == edge."""
+
+    def test_overshoot_left_crosses(self):
+        peers = {"mac": (-1920, 0, 1920, 1080)}
+        for x in (-1, -55, -300):
+            hit = geometry.hit(MON, peers, x, 500)
+            self.assertIsNotNone(hit, x)
+            self.assertEqual((hit[0], hit[1]), ("mac", "left"))
+
+    def test_overshoot_right_crosses(self):
+        peers = {"tv": (1920, 0, 1920, 1080)}
+        hit = geometry.hit(MON, peers, 1930, 500)
+        self.assertEqual((hit[0], hit[1]), ("tv", "right"))
+
+    def test_overshoot_uses_nearest_peer_point(self):
+        peers = {"mac": (-1920, 700, 1920, 380)}
+        hit = geometry.hit(MON, peers, -40, 200)  # overshoot above the band
+        self.assertIsNotNone(hit)
+        self.assertEqual((hit[0], hit[1]), ("mac", "left"))
+        self.assertEqual(hit[3], 0.0)
+
+    def test_overshoot_into_second_monitor_stays_local(self):
+        peers = {"mac": (-1920, 0, 1920, 1080)}
+        self.assertIsNone(geometry.hit(DUAL, peers, 2000, 500))
+
+    def test_overshoot_past_gap_still_blocks(self):
+        peers = {"mac": (-2400, 0, 1920, 1080)}
+        self.assertIsNone(geometry.hit(MON, peers, -60, 500))
+
+    def test_concave_notch_is_not_an_exit(self):
+        l_shape = [(0, 0, 1920, 1080), (1920, 500, 1920, 580)]
+        peers = {"mac": (-1920, 0, 1920, 1080)}
+        self.assertIsNone(geometry.hit(l_shape, peers, 2500, 200))

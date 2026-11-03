@@ -99,7 +99,24 @@ def hit(mons: list[Rect], peers: dict[str, Rect], x: int, y: int,
     entering at the peer's nearest point. Returns ``(name, side, nx, ny)`` —
     peer name, the direction the cursor leaves the local desktop, and the
     peer-relative entry position — or ``None`` inside the desktop union.
+
+    Low-level hooks report the *unclamped* target position, so a fast push
+    can overshoot the boundary by tens of pixels. An outside-union point is
+    projected back through the union side it exited and evaluated as a press
+    on that boundary.
     """
+    if not any(inside(m, x, y) for m in mons):
+        bx, by, bw, bh = union_bounds(mons)
+        exits = ((bx - x, "left"), (x - (bx + bw - 1), "right"),
+                 (by - y, "top"), (y - (by + bh - 1), "bottom"))
+        depth, side = max(exits)
+        if depth <= 0:
+            return None  # inside the bounding box but in a concave gap
+        px, py = {"left": (bx, y), "right": (bx + bw - 1, y),
+                  "top": (x, by), "bottom": (x, by + bh - 1)}[side]
+        if not any(inside(m, px, py) for m in mons):
+            return None
+        x, y = px, py
     best = None
     for name, rect in peers.items():
         cx, cy = clamp(rect, x, y)

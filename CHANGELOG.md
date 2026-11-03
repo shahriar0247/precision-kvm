@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.6
+
+- Fixed edge crossings lost during continuous motion: Windows reports the
+  unclamped cursor target to the low-level hook, so a fast push reports
+  positions already inside the peer's zone (e.g. x = -55) where no boundary
+  press was detected — you had to stop and re-approach to land exactly on the
+  edge. Overshot positions are now projected back through the union side they
+  exited and treated as an edge press, so the first push past the edge always
+  crosses.
+
 ## 0.9.5
 
 - Discovery advertises the primary LAN address first: multi-homed hosts
