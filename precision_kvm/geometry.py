@@ -91,31 +91,46 @@ def default_peer(mons: list[Rect], side: str, align: float = 0.5,
 
 def hit(mons: list[Rect], peers: dict[str, Rect], x: int, y: int,
         gap: int = EDGE_GAP):
-    """Resolve a cursor position to a peer crossing.
+    """Resolve a cursor position to a peer crossing — nearest peer wins.
 
-    Returns ``(name, side, nx, ny)`` — peer name, the direction the cursor
-    leaves the local desktop, and the peer-relative entry position — or
-    ``None`` when the cursor is not poised at a peer-facing boundary.
+    The distance off the boundary must fit ``gap`` (the cursor genuinely
+    presses the edge), but the distance *along* the edge is unlimited: a
+    peer only covering part of an edge still crosses from its dead strips,
+    entering at the peer's nearest point. Returns ``(name, side, nx, ny)`` —
+    peer name, the direction the cursor leaves the local desktop, and the
+    peer-relative entry position — or ``None`` inside the desktop union.
     """
-    limit = gap * gap
+    best = None
     for name, rect in peers.items():
         cx, cy = clamp(rect, x, y)
         dx, dy = cx - x, cy - y
-        distance2 = dx * dx + dy * dy
-        if not 0 < distance2 <= limit:
-            continue
-        step_x = x + (1 if dx > 0 else -1 if dx < 0 else 0)
-        step_y = y + (1 if dy > 0 else -1 if dy < 0 else 0)
-        if any(inside(m, step_x, step_y) for m in mons):
-            continue  # still inside the local desktop union
-        side = "left" if dx < 0 else "right" if dx > 0 else None
-        if side is None or abs(dy) > abs(dx):
-            side = "top" if dy < 0 else "bottom"
-        rx, ry, rw, rh = rect
-        nx = (cx - rx) / max(1, rw - 1)
-        ny = (cy - ry) / max(1, rh - 1)
-        return name, side, nx, ny
-    return None
+        # Each axis on which the peer lies strictly outside the cursor is a
+        # candidate crossing direction; the step must leave the desktop union.
+        candidates = []
+        if dx < 0:
+            candidates.append((-dx, "left", x - 1, y))
+        if dx > 0:
+            candidates.append((dx, "right", x + 1, y))
+        if dy < 0:
+            candidates.append((-dy, "top", x, y - 1))
+        if dy > 0:
+            candidates.append((dy, "bottom", x, y + 1))
+        for off, side, sx, sy in candidates:
+            if off > gap or any(inside(m, sx, sy) for m in mons):
+                continue
+            # Prefer the peer closest along the edge, then the tightest
+            # boundary — a corner between two peers picks the natural one.
+            along = abs(dy) if side in ("left", "right") else abs(dx)
+            score = (along, off)
+            if best is None or score < best[0]:
+                rx, ry, rw, rh = rect
+                nx = (cx - rx) / max(1, rw - 1)
+                ny = (cy - ry) / max(1, rh - 1)
+                best = (score, name, side, nx, ny)
+    if best is None:
+        return None
+    _, name, side, nx, ny = best
+    return name, side, nx, ny
 
 
 def return_point(mons: list[Rect], peer: Rect, nx: float, ny: float):

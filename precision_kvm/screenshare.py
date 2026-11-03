@@ -21,7 +21,47 @@ from .transport import (FramedSocket, ProtocolError, TLSListener, PlainListener,
 SCREEN_PORT_OFFSET = 4
 SCREEN_MAX_FRAME = 8 * 1024 * 1024
 DEFAULT_CFG = {"enabled": False, "fps": 15, "quality": 60, "scale": 1.0,
-               "gray": False, "kbps": 8000, "monitor": 0}
+               "gray": False, "kbps": 8000, "monitor": 0, "cursor": True}
+
+# Classic pointer arrow, ~11×18 px, composited over the feed.
+CURSOR_POLY = ((0, 0), (0, 16), (4, 12), (7, 18), (9, 17), (6, 11), (11, 11))
+
+
+def _cursor_pos() -> tuple[int, int] | None:
+    """OS cursor position in virtual-screen pixels (the framebuffer has no
+    cursor in it — mss needs a composite)."""
+    import sys
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+            point = wintypes.POINT()
+            if ctypes.windll.user32.GetCursorPos(ctypes.byref(point)):
+                return point.x, point.y
+        elif sys.platform == "darwin":
+            import Quartz  # type: ignore
+            location = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
+            return round(location.x), round(location.y)
+    except Exception:
+        pass
+    return None
+
+
+def _draw_cursor(image, sct, monitor: int, scale: float) -> None:
+    """Composite the local pointer glyph — scaled so its on-screen size
+    stays constant regardless of stream resolution."""
+    pos = _cursor_pos()
+    if pos is None:
+        return
+    region = sct.monitors[min(monitor, len(sct.monitors) - 1)]
+    x, y = pos[0] - region["left"], pos[1] - region["top"]
+    if not (0 <= x < image.width and 0 <= y < image.height):
+        return
+    from PIL import ImageDraw
+    size = 1.0 / max(0.1, scale)
+    draw = ImageDraw.Draw(image)
+    outline = [(x + px * size, y + py * size) for px, py in CURSOR_POLY]
+    draw.polygon(outline, fill=(255, 255, 255), outline=(0, 0, 0))
 
 
 def _num(value, default: float) -> float:
@@ -43,6 +83,7 @@ def normalize_cfg(values: dict) -> dict:
     cfg.update({k: v for k, v in (values or {}).items() if k in DEFAULT_CFG})
     cfg["enabled"] = bool(cfg["enabled"])
     cfg["gray"] = bool(cfg["gray"])
+    cfg["cursor"] = bool(cfg["cursor"])
     cfg["fps"] = min(60, max(1, int(_num(cfg["fps"], DEFAULT_CFG["fps"]))))
     cfg["quality"] = min(95, max(10, int(_num(cfg["quality"], DEFAULT_CFG["quality"]))))
     cfg["scale"] = min(1.0, max(0.1, _num(cfg["scale"], DEFAULT_CFG["scale"])))
@@ -315,6 +356,8 @@ class ScreenShareClient:
                 frame_start = time.monotonic()
                 try:
                     image = _grab(sct, cfg["monitor"])
+                    if cfg["cursor"]:
+                        _draw_cursor(image, sct, cfg["monitor"], cfg["scale"])
                     payload = jpeg_encode(image, cfg)
                     if bucket.allow(len(payload), cfg["kbps"]):
                         channel.send_binary(payload)

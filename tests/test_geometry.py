@@ -18,10 +18,14 @@ class GeometryTest(unittest.TestCase):
         self.assertAlmostEqual(ny, 500 / 1079, places=2)
         self.assertIsNone(geometry.hit(MON, peers, 100, 500))
 
-    def test_partial_overlap_limits_crossing(self):
+    def test_partial_overlap_crosses_into_nearest_point(self):
         peers = {"mac": (-1920, 700, 1920, 380)}  # only the lower band touches
         self.assertIsNotNone(geometry.hit(MON, peers, 0, 800))
-        self.assertIsNone(geometry.hit(MON, peers, 0, 200))
+        # dead strips still cross — entering at the peer's nearest point
+        hit = geometry.hit(MON, peers, 0, 200)
+        self.assertIsNotNone(hit)
+        self.assertEqual((hit[0], hit[1]), ("mac", "left"))
+        self.assertEqual(hit[3], 0.0)  # clamps to the peer's top edge
 
     def test_corner_crossing(self):
         peers = {"mac": (-1920, -1080, 1920, 1080)}  # up-left, flush corner
@@ -91,8 +95,8 @@ class GeometryTest(unittest.TestCase):
         peers = {"mac": (-1920, 0, 1920, 1080), "linux": (1920, 300, 1920, 1080)}
         self.assertEqual(geometry.hit(MON, peers, 0, 500)[0], "mac")
         self.assertEqual(geometry.hit(MON, peers, 1919, 500)[0], "linux")
-        # "linux" only overlaps y>=300: crossing above it goes nowhere
-        self.assertIsNone(geometry.hit(MON, peers, 1919, 100))
+        # "linux" only overlaps y>=300: crossing above it enters at its top
+        self.assertEqual(geometry.hit(MON, peers, 1919, 100)[0], "linux")
 
     def test_default_peer_matches_legacy_model(self):
         rect = geometry.default_peer(MON, "left", align=0.5, span=0.6)

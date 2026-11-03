@@ -230,10 +230,12 @@ class ControlPanel:
                    bounds=(0, 200000, 500), host_only=True)
         self.check(screen, 5, "Black && white (grayscale — smaller and faster)",
                    "screen_gray", host_only=True)
-        self.field(screen, 6, "Client monitor (0 = whole desktop)", "screen_monitor",
+        self.check(screen, 6, "Show the client's cursor in the feed",
+                   "screen_cursor", host_only=True)
+        self.field(screen, 7, "Client monitor (0 = whole desktop)", "screen_monitor",
                    bounds=(0, 7, 1), host_only=True)
         for key in ("screen_fps", "screen_quality", "screen_scale", "screen_kbps",
-                    "screen_gray", "screen_monitor"):
+                    "screen_gray", "screen_cursor", "screen_monitor"):
             self.variables[key].trace_add("write", lambda *_: self._screen_push())
         self.video = tk.Label(screen, bg="#0b0d12", anchor="center",
                               text="No stream — start the host, connect a client,\n"
@@ -734,6 +736,7 @@ class ControlPanel:
         return {"enabled": bool(self._screen_on.get()),
                 "fps": number("screen_fps", 15), "quality": number("screen_quality", 60),
                 "scale": scale, "gray": bool(self.variables["screen_gray"].get()),
+                "cursor": bool(self.variables["screen_cursor"].get()),
                 "kbps": number("screen_kbps", 8000),
                 "monitor": int(number("screen_monitor", 0))}
 

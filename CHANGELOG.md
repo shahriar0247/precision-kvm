@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.2
+
+- Faster edge crossing: the strips beside the peer box no longer swallow the cursor — hitting any part of a peer-facing edge crosses instantly into the nearest peer (entering at its nearest point), so fast continuous motion crosses in one motion instead of needing a second nudge.
+- Screen share now draws the client's real cursor over the feed (toggleable) — the framebuffer alone had no pointer in it.
+
 ## 0.9.1
 
 - Fixed host start failing with `could not convert string to float: '100%'` when the Screen share resolution scale had been saved — stream settings now tolerate persisted percent strings and junk values.

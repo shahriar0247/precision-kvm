@@ -51,7 +51,8 @@ def load_settings() -> dict:
                 "windows_home_end": True, "windows_word_nav": True,
                 "screen_share": True, "screen_enabled": False,
                 "screen_fps": 15, "screen_quality": 60, "screen_scale": 1.0,
-                "screen_gray": False, "screen_kbps": 8000, "screen_monitor": 0}
+                "screen_gray": False, "screen_kbps": 8000, "screen_monitor": 0,
+                "screen_cursor": True}
     if path.exists():
         saved = json.loads(path.read_text(encoding="utf-8"))
         settings.update(saved)

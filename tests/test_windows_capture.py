@@ -22,12 +22,14 @@ class CaptureStateTests(unittest.TestCase):
             self.assertGreater(y, 0)
             self.assertLess(y, 1079)
 
-    def test_peer_align_limits_crossing_to_shared_segment(self):
+    def test_peer_align_dead_strip_still_crosses(self):
         capture = WindowsCapture(lambda event: None, "left",
                                  peer_align=0.8, peer_span=0.3)
         capture._size = (1920, 1080)
         self.assertTrue(capture._at_edge(0, int(1079 * 0.8)))
-        self.assertFalse(capture._at_edge(0, int(1079 * 0.2)))
+        # outside the drawn segment the edge still crosses — continuous
+        # motion must not die in the strips beside the peer rect
+        self.assertTrue(capture._at_edge(0, int(1079 * 0.2)))
 
     def test_callback_failure_recorded(self):
         def fail(event):
