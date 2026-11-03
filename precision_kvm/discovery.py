@@ -78,7 +78,9 @@ def _describe(info) -> dict:
         key = key.decode() if isinstance(key, bytes) else str(key)
         value = value.decode() if isinstance(value, bytes) else value
         props[key] = value
+    addresses = info.parsed_addresses()
     return {"name": info.name.removesuffix(f".{SERVICE}"),
-            "host": info.parsed_addresses()[0] if info.parsed_addresses() else "",
+            "host": addresses[0] if addresses else "",
+            "hosts": addresses,
             "port": int(info.port), "tls": props.get("tls", "1") != "0",
             "fingerprint": props.get("fp", "")}

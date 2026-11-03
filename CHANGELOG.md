@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.4
+
+- Fixed auto-discovery on multi-homed hosts: the client now probes every
+  advertised address and falls back to the paired host, instead of blindly
+  trusting the first advertised address — which could pick an unreachable
+  secondary interface (e.g. a direct-link subnet) and leave input unable to
+  connect while screen/clipboard stayed up.
+- Discovery now resolves only before the first attempt and after failures,
+  instead of every retry.
+- Fixed `connect_mac` for app-bundle installs: it launches
+  `~/Applications/PrecisionKVM.app` when present instead of always `cd`-ing into
+  the old venv directory, which no longer exists after bundle installs and was
+  logging "Client exited" every launch.
+
 ## 0.9.3
 
 - Fixed the screen-share connect/drop loop: the channel's 2-second socket deadline was treated as a disconnect whenever the stream idled, so sessions flapped every couple of seconds and "Start stream" appeared to do nothing. Idle timeouts are now tolerated on both ends — only real failures drop.

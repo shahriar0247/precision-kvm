@@ -170,3 +170,37 @@ def test_reconnect_does_not_hide_permission_errors():
     with patch("precision_kvm.session.run_client", side_effect=RuntimeError("Accessibility required")):
         with pytest.raises(RuntimeError, match="Accessibility"):
             run_client_forever({})
+
+
+def _advertised(hosts, port=24819):
+    return {"name": "host", "host": hosts[0], "hosts": hosts, "port": port, "tls": True}
+
+
+def test_resolve_host_prefers_reachable_advertised_address():
+    config = {"host": "10.0.0.5", "port": 24819}
+    with patch("precision_kvm.discovery.browse",
+               return_value=[_advertised(["192.168.50.1", "192.168.2.145"])]), \
+         patch("precision_kvm.session._reachable",
+               side_effect=lambda host, port, timeout=0.6: host == "192.168.2.145"):
+        session_module._resolve_host(config, lambda message: None)
+    assert config["host"] == "192.168.2.145"
+    assert config["port"] == 24819
+
+
+def test_resolve_host_falls_back_to_configured_when_advertised_unreachable():
+    config = {"host": "192.168.2.145", "port": 24819}
+    with patch("precision_kvm.discovery.browse",
+               return_value=[_advertised(["192.168.50.1"])]), \
+         patch("precision_kvm.session._reachable",
+               side_effect=lambda host, port, timeout=0.6: host == "192.168.2.145"):
+        session_module._resolve_host(config, lambda message: None)
+    assert config["host"] == "192.168.2.145"
+
+
+def test_resolve_host_keeps_configured_when_nothing_reachable():
+    config = {"host": "192.168.2.145", "port": 24819}
+    with patch("precision_kvm.discovery.browse",
+               return_value=[_advertised(["192.168.50.1"])]), \
+         patch("precision_kvm.session._reachable", return_value=False):
+        session_module._resolve_host(config, lambda message: None)
+    assert config["host"] == "192.168.2.145"

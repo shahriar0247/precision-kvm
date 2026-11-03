@@ -116,8 +116,11 @@ class HostSession:
                 with (state_dir() / "mac-client.log").open("ab") as log:
                     process = subprocess.Popen(
                         ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", target,
-                         "cd ~/Applications/PrecisionKVM && exec .venv/bin/python -m precision_kvm "
-                         "client --config ~/.config/PrecisionKVM/client.json"],
+                         "if [ -x ~/Applications/PrecisionKVM.app/Contents/MacOS/PrecisionKVM ]; then "
+                         "exec ~/Applications/PrecisionKVM.app/Contents/MacOS/PrecisionKVM "
+                         "client --config ~/.config/PrecisionKVM/client.json; "
+                         "else cd ~/Applications/PrecisionKVM && exec .venv/bin/python "
+                         "-m precision_kvm client --config ~/.config/PrecisionKVM/client.json; fi"],
                         stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                     self.remote_process = process
@@ -367,14 +370,16 @@ def run_client_forever(config: dict, stop_event=None, status=print):
             screen = ScreenShareClient(config,
                 status=lambda message: status(f"Screen: {message}"))
             screen.start()
+        if config.get("auto"):
+            _resolve_host(config, status)
         while not stop_event.is_set():
             started = time.monotonic()
-            if config.get("auto"):
-                _resolve_host(config, status)
             try:
                 run_client(config, connect_timeout=0.8, stop_event=stop_event, status=status)
             except (OSError, EOFError, ProtocolError, BackpressureError) as exc:
                 status(f"Server unavailable / disconnected ({type(exc).__name__}); retrying every second")
+                if config.get("auto"):
+                    _resolve_host(config, status)
             if stop_event.wait(max(0.0, 1.0 - (time.monotonic() - started))):
                 break
     finally:
@@ -394,9 +399,26 @@ def _resolve_host(config: dict, status) -> None:
     if not services:
         return
     service = services[0]
-    config["host"], config["port"] = service["host"], service["port"]
-    config["tls"] = service["tls"]
-    status(f"Discovered {service['name']} at {service['host']}:{service['port']}")
+    port = int(service["port"])
+    advertised = list(service.get("hosts") or ([service["host"]] if service.get("host") else []))
+    configured = config.get("host")
+    # Multi-homed hosts advertise every address; only accept one that accepts a
+    # connection, with the configured host as the fallback.
+    for host in advertised + ([configured] if configured else []):
+        if host and _reachable(str(host), port):
+            if host != configured:
+                status(f"Discovered {service['name']} at {host}:{port}")
+            config["host"], config["port"] = str(host), port
+            config["tls"] = service["tls"]
+            return
+
+
+def _reachable(host: str, port: int, timeout: float = 0.6) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout):
+            return True
+    except OSError:
+        return False
 
 
 def run_client(config: dict, connect_timeout=3, stop_event=None, status=print):
