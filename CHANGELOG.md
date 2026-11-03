@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.8
+
+- Fixed an unbounded thread leak in discovery: every reconnect attempt while
+  the host was unreachable leaked a zeroconf `ServiceBrowser` thread (45 leaked
+  threads in 8 minutes on a flaky link). The browser is now cancelled before
+  the zeroconf instance closes, so clients no longer degrade and stall after
+  long disconnects.
+
 ## 0.9.7
 
 - Fixed Mac → PC clipboard sharing never working: macOS 26/27 pasteboard privacy

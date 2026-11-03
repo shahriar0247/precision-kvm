@@ -68,12 +68,17 @@ def browse(timeout: float = 2.5) -> list[dict]:
             def remove_service(self, zc, service_type, name):
                 pass
 
-        ServiceBrowser(zeroconf, SERVICE, Listener())
+        browser = ServiceBrowser(zeroconf, SERVICE, Listener())
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline and not found:
             time.sleep(0.05)
         time.sleep(0.1)  # let simultaneous advertisers settle
     finally:
+        if browser is not None:
+            try:
+                browser.cancel()
+            except Exception:
+                pass
         zeroconf.close()
     return found
 
