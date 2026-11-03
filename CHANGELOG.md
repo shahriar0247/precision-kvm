@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.3
+
+- Fixed the screen-share connect/drop loop: the channel's 2-second socket deadline was treated as a disconnect whenever the stream idled, so sessions flapped every couple of seconds and "Start stream" appeared to do nothing. Idle timeouts are now tolerated on both ends — only real failures drop.
+- Full screen button: the feed pops into a borderless fullscreen window at native resolution — Esc or double-click exits.
+- One-click stream presets: **LAN turbo** (30 fps · 75% scale · uncapped), **Balanced**, and **Slow link** (10 fps · grayscale · 4 Mbps cap) retune every knob at once.
+
 ## 0.9.2
 
 - Faster edge crossing: the strips beside the peer box no longer swallow the cursor — hitting any part of a peer-facing edge crosses instantly into the nearest peer (entering at its nearest point), so fast continuous motion crosses in one motion instead of needing a second nudge.

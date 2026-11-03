@@ -242,7 +242,10 @@ class ScreenShareServer:
         window_bytes = 0
         window_start = time.monotonic()
         while not self.stopped.is_set():
-            payload = channel.recv_binary()
+            try:
+                payload = channel.recv_binary()
+            except socket.timeout:
+                continue  # idle stream — the socket deadline is not a drop
             image = jpeg_decode(payload)
             now = time.monotonic()
             self._received += 1
@@ -320,7 +323,10 @@ class ScreenShareClient:
         """Reader for host→client JSON control messages."""
         try:
             while not self.stopped.is_set():
-                message = channel.recv()
+                try:
+                    message = channel.recv()
+                except socket.timeout:
+                    continue  # quiet control channel — not a disconnect
                 if message.get("type") == "screen_cfg":
                     with self._cfg_lock:
                         self._cfg = normalize_cfg(

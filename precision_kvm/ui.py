@@ -10,6 +10,7 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
+from typing import TYPE_CHECKING
 
 try:
     import pystray
@@ -20,6 +21,8 @@ try:
     from PIL import ImageTk
 except ImportError:
     ImageTk = None  # type: ignore[assignment]
+if TYPE_CHECKING:
+    from PIL.ImageTk import PhotoImage
 
 from .config import identity, load_settings, local_ip, save_json, state_dir, validate_settings
 from . import geometry, ui_common
@@ -206,7 +209,10 @@ class ControlPanel:
         self._screen_on = tk.BooleanVar(value=self.settings.get("screen_enabled", False))
         self.variables["screen_enabled"] = self._screen_on
         self.variables["screen_share"] = tk.BooleanVar(value=self.settings.get("screen_share", True))
-        self._photo: object = None
+        self._photo: PhotoImage | None = None
+        self._fs_photo: PhotoImage | None = None
+        self._fs: tk.Toplevel | None = None
+        self._fs_label: tk.Label | None = None
         srow = ttk.Frame(screen)
         srow.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
         start = ttk.Button(srow, text="Start stream", style="Accent.TButton",
@@ -217,7 +223,15 @@ class ControlPanel:
         stopp.pack(side="left", padx=8)
         restart = ttk.Button(srow, text="Restart", command=self._screen_restart)
         restart.pack(side="left")
-        self.controls.extend((start, stopp, restart))
+        full = ttk.Button(srow, text="Full screen", command=self._fullscreen)
+        full.pack(side="left", padx=8)
+        ttk.Label(srow, text="Preset:", style="Muted.TLabel").pack(side="left", padx=(10, 4))
+        def preset_command(preset):
+            return lambda: self._screen_preset(preset)
+        for preset in ("LAN turbo", "Balanced", "Slow link"):
+            ttk.Button(srow, text=preset,
+                       command=preset_command(preset)).pack(side="left", padx=2)
+        self.controls.extend((start, stopp, restart, full))
         self.field(screen, 1, "Frames per second", "screen_fps",
                    ("1", "5", "10", "15", "24", "30", "60"), host_only=True)
         self.field(screen, 2, "JPEG quality (10–95)", "screen_quality",
@@ -241,14 +255,14 @@ class ControlPanel:
                               text="No stream — start the host, connect a client,\n"
                                    "then press Start stream",
                               fg="#8b98ad", font=("Segoe UI", 10))
-        self.video.grid(row=7, column=0, columnspan=2, sticky="nsew", pady=12)
-        screen.rowconfigure(7, weight=1)
+        self.video.grid(row=8, column=0, columnspan=2, sticky="nsew", pady=12)
+        screen.rowconfigure(8, weight=1)
         self.screen_stats = tk.StringVar(value="Screen share is idle")
         stats_label = ttk.Label(screen, textvariable=self.screen_stats,
                                 style="Muted.TLabel", wraplength=760)
-        stats_label.grid(row=8, column=0, columnspan=2, sticky="w")
+        stats_label.grid(row=9, column=0, columnspan=2, sticky="w")
         self._wrap_labels.append(stats_label)
-        self.note(screen, 9, "View-only — the feed never moves your mouse; input still "
+        self.note(screen, 10, "View-only — the feed never moves your mouse; input still "
                   "crosses at the screen edge. The client captures only while streaming "
                   "is on; macOS asks for Screen Recording once, Windows needs nothing.\n\n"
                   "Tuning: lower quality/scale/fps or grayscale for slow links; raise the "
@@ -740,6 +754,37 @@ class ControlPanel:
                 "kbps": number("screen_kbps", 8000),
                 "monitor": int(number("screen_monitor", 0))}
 
+    def _screen_preset(self, name: str):
+        values = {"LAN turbo":  ("30", "50", "75%",  "0"),
+                  "Balanced":   ("15", "60", "100%", "8000"),
+                  "Slow link":  ("10", "35", "50%",  "4000")}[name]
+        fps, quality, scale, kbps = values
+        self.variables["screen_gray"].set(name == "Slow link")
+        self.variables["screen_fps"].set(fps)
+        self.variables["screen_quality"].set(quality)
+        self.variables["screen_scale"].set(scale)
+        self.variables["screen_kbps"].set(kbps)
+        self.status.set(f"Screen preset: {name}")
+
+    def _fullscreen(self):
+        if self._fs is not None:
+            self._fs.destroy()
+            self._fs = None
+            self._fs_label = None
+            return
+        win = tk.Toplevel(self.root)
+        win.attributes("-fullscreen", True)
+        win.configure(bg="black")
+        label = tk.Label(win, bg="black", anchor="center")
+        label.pack(fill="both", expand=True)
+        if self._photo is not None:
+            label.configure(image=self._photo)
+        win.bind("<Escape>", lambda _e: self._fullscreen())
+        label.bind("<Double-Button-1>", lambda _e: self._fullscreen())
+        win.protocol("WM_DELETE_WINDOW", self._fullscreen)
+        self._fs, self._fs_label = win, label
+        label.focus_set()
+
     def _screen_push(self):
         if self.session and self.session.screen:
             self.session.screen.set_config(self._screen_cfg())
@@ -1083,6 +1128,12 @@ class ControlPanel:
             return
         image, stats = self.session.screen.poll_frame()
         if image is not None and ImageTk is not None:
+            if self._fs_label is not None:
+                fs_image = image.copy()
+                fs_image.thumbnail((self.root.winfo_screenwidth(),
+                                    self.root.winfo_screenheight()))
+                self._fs_photo = ImageTk.PhotoImage(fs_image)
+                self._fs_label.configure(image=self._fs_photo)
             image.thumbnail((900, 540))
             photo = ImageTk.PhotoImage(image)
             self._photo = photo  # keep a reference or Tk drops the image
