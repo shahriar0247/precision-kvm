@@ -51,13 +51,14 @@ Either machine can host or client — flip the role picker at the top of the pan
 - **Live latency graph** — the panel shows the actual round-trip time while you share.
 - **Multi-client, real topology** — the canvas maps your actual displays; drop clients on any edge or corner and cross into the one that sits there. Zoom, pan, rename inline, add as many as you like.
 - **Zero-touch clients over SSH** — one button installs the client on a Mac or PC, pairs it, upgrades it when it's behind, and starts it connecting back. Keys first, password prompt only if needed.
+- **See the client from anywhere** — the Screen share tab streams the client's display so a machine in another room still feels local. Strictly view-only: the feed never eats your input. Tune FPS, quality, scale, bitrate and grayscale live; the stream rides its own authenticated channel, so video can't starve input.
 - **Per-OS client tweaks** — Mac clients get smooth scrolling, Home/End and word-navigation; Windows clients can drop "Enhance pointer precision" while controlled and lock when you cross back.
 - **Real security** — pairing token + pinned certificate over TLS; toggle off only on a trusted wire. mDNS discovery, configurable port.
 - **Tray + login startup** — close the window, it keeps sharing.
 
 ![Windows client tweaks](docs/assets/windows-tweaks.png)
 
-It does not stream video and doesn't replace a hardware KVM for BIOS or login screens.
+The optional screen share is JPEG frames for keeping an eye on a remote display — it doesn't replace a hardware KVM for BIOS or login screens.
 
 ## Controls
 

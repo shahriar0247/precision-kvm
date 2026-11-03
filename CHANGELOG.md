@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.0
+
+- Screen share tab: watch the client machine's screen while you control it — a dedicated last tab shows a live feed alongside normal edge-crossing KVM control.
+- View-only by design: hovering or clicking the feed never sends input; the pointer still only crosses at the screen edge.
+- Tunable stream: Start/Stop/Restart plus FPS, JPEG quality, resolution scale, bitrate cap, color vs black & white, and a client monitor picker — all applied live without reconnecting.
+- Runs on its own authenticated TLS channel (port + 4), length-prefixed JPEG frames, so video can never interfere with input or clipboard.
+- macOS asks for Screen Recording permission the first time a stream starts, then never again; Windows needs nothing.
+- New `mss` dependency for native cross-platform capture.
+
 ## 0.8.0
 
 - Install & connect over SSH: put `user@host` in the Client SSH target field, click **Install via SSH…** and the client installs itself on the remote machine (or upgrades it when it's running an older build), writes pairing, and starts connecting back — Windows clients need nothing else, macOS asks for Accessibility once.
