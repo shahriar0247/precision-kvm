@@ -333,6 +333,10 @@ class WindowsClipboard:
             self.user.CloseClipboard()
 
 
+PASTEBOARD_HELP = ("set PrecisionKVM to Allow under System Settings > Privacy & Security > "
+                   "Paste from Other Apps, then reconnect the client")
+
+
 class MacClipboard:
     def __init__(self):
         import AppKit
@@ -340,6 +344,29 @@ class MacClipboard:
         import objc
         self.appkit, self.foundation = AppKit, Foundation
         self._autorelease_pool = objc.autorelease_pool
+
+    def _access_behavior(self, board):
+        behavior = getattr(board, "accessBehavior", None)
+        if callable(behavior):
+            behavior = behavior()
+        return behavior
+
+    def access(self):
+        """None when macOS allows background clipboard reads; else a user-facing reason."""
+        with self._autorelease_pool():
+            a = self.appkit
+            behavior = self._access_behavior(a.NSPasteboard.generalPasteboard())
+            if behavior is None:
+                return None
+            deny = getattr(a, "NSPasteboardAccessBehaviorAlwaysDeny", None)
+            ask = getattr(a, "NSPasteboardAccessBehaviorAsk", None)
+            default = getattr(a, "NSPasteboardAccessBehaviorDefault", None)
+            if deny is not None and behavior == deny:
+                return ("Clipboard reads are denied by macOS — " + PASTEBOARD_HELP)
+            if ((ask is not None and behavior == ask)
+                    or (default is not None and behavior == default)):
+                return ("macOS will ask before each clipboard read until you " + PASTEBOARD_HELP)
+            return None
 
     def revision(self):
         with self._autorelease_pool():
@@ -349,6 +376,10 @@ class MacClipboard:
         with self._autorelease_pool():
             a = self.appkit
             board = a.NSPasteboard.generalPasteboard()
+            deny = getattr(a, "NSPasteboardAccessBehaviorAlwaysDeny", None)
+            behavior = self._access_behavior(board)
+            if deny is not None and behavior is not None and behavior == deny:
+                raise PermissionError("macOS denies clipboard reads — " + PASTEBOARD_HELP)
             result = {}
             # NSPasteboardTypeString is public.utf8-plain-text. Check the
             # NSData length before copying/decoding a potentially huge string.
@@ -407,11 +438,11 @@ def native_backend():
 
 class ClipboardBridge:
     """One local backend and one connection, with loop suppression and no work queue."""
-    def __init__(self, backend, max_bytes=DEFAULT_MAX_BYTES):
-        self.backend, self.max_bytes = backend, _limit(max_bytes)
+    def __init__(self, backend, max_bytes=DEFAULT_MAX_BYTES, note: Callable[[str], None] | None = None):
+        self.backend, self.max_bytes, self.note = backend, _limit(max_bytes), note
         self.lock = threading.Lock()
-        self.last_revision = None
-        self.last_digest = None
+        self.last_revision: int | None = None
+        self.last_digest: str | None = None
 
     def baseline(self):
         with self.lock:
@@ -427,14 +458,17 @@ class ClipboardBridge:
                 return None
             try:
                 bundle = self.backend.read(self.max_bytes)
-            except ValueError:
-                # An oversized or unsupported copy is skipped once, not
-                # re-decoded four times per second until the next user copy.
+            except (ValueError, PermissionError):
+                # An unreadable copy is reported once, not re-attempted four
+                # times per second until the next user copy.
                 self.last_revision = revision
                 raise
             self.last_revision = revision
             if not bundle:
                 self.last_digest = None
+                if self.note:
+                    self.note("Clipboard changed but nothing readable was found "
+                              "(empty copy, files, or blocked access)")
                 return None
             digest = bundle_digest(bundle)
             if digest == self.last_digest:
@@ -458,7 +492,7 @@ class ClipboardBridge:
 def _serve_link(channel, backend, max_bytes, stopped, status):
     if stopped.is_set():
         return
-    bridge = ClipboardBridge(backend, max_bytes)
+    bridge = ClipboardBridge(backend, max_bytes, note=status)
     try:
         bridge.baseline()
     except (OSError, ValueError):
@@ -470,6 +504,9 @@ def _serve_link(channel, backend, max_bytes, stopped, status):
             while not stopped.is_set() and not ended.is_set():
                 try:
                     bundle = bridge.changed()
+                except PermissionError as exc:
+                    status(f"Clipboard blocked: {exc}")
+                    bundle = None
                 except OSError:
                     bundle = None
                 except ValueError:
@@ -547,6 +584,10 @@ class ClipboardServer:
         backend = None
         try:
             backend = self.backend if self.backend is not None else native_backend()
+            if hasattr(backend, "access"):
+                blocked = backend.access()
+                if blocked:
+                    self.status(blocked)
             listener_t = TLSListener if self.cert and self.key else PlainListener
             listener = listener_t(self.cert, self.key, port=self.port)
             self.listener = listener
@@ -603,6 +644,10 @@ class ClipboardClient:
         backend = None
         try:
             backend = self.backend if self.backend is not None else native_backend()
+            if hasattr(backend, "access"):
+                blocked = backend.access()
+                if blocked:
+                    self.status(blocked)
             while not self.stopped.is_set():
                 started = time.monotonic()
                 try:

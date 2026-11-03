@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.7
+
+- Fixed Mac → PC clipboard sharing never working: macOS 26/27 pasteboard privacy
+  ("Paste from Other Apps") silently denies the client's background clipboard
+  reads, so copies on the Mac were dropped without any error while PC → Mac
+  kept working. The client now detects the denied state, reports it at connect
+  time and on each unreadable copy, and points to the exact fix: set
+  PrecisionKVM to **Allow** under System Settings › Privacy & Security ›
+  Paste from Other Apps.
+
 ## 0.9.6
 
 - Fixed edge crossings lost during continuous motion: Windows reports the

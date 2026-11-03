@@ -370,6 +370,115 @@ def test_mac_autorelease_context_exits_when_native_access_fails():
     assert entered == exited == [True]
 
 
+def mac_backend_with_access(behavior):
+    backend = MacClipboard.__new__(MacClipboard)
+    backend.appkit, backend.foundation = Mock(), Mock()
+    backend._autorelease_pool = Mock(side_effect=nullcontext)
+    appkit = backend.appkit
+    board = appkit.NSPasteboard.generalPasteboard.return_value
+    appkit.NSPasteboardAccessBehaviorAlwaysDeny = "always-deny"
+    appkit.NSPasteboardAccessBehaviorAsk = "ask"
+    appkit.NSPasteboardAccessBehaviorDefault = "default"
+    if callable(behavior):
+        board.accessBehavior = Mock(return_value=behavior)
+    else:
+        board.accessBehavior = behavior
+    return backend, board
+
+
+def test_mac_denied_pasteboard_raises_instead_of_reading_nothing():
+    backend, board = mac_backend_with_access("always-deny")
+    with pytest.raises(PermissionError, match="Paste from Other Apps"):
+        backend.read(1024)
+    board.dataForType_.assert_not_called()
+    message = backend.access()
+    assert "Paste from Other Apps" in message
+
+
+def test_mac_ask_and_default_pasteboard_warn_but_attempt_the_read():
+    for behavior in ("ask", "default"):
+        backend, board = mac_backend_with_access(behavior)
+        assert "Paste from Other Apps" in backend.access()
+        board.dataForType_.return_value = None
+        assert backend.read(1024) is None
+        board.dataForType_.assert_called()
+
+
+def test_mac_allowed_or_unknown_pasteboard_reads_without_warning():
+    for behavior in ("always-allow-mock", None):
+        backend, board = mac_backend_with_access(behavior)
+        assert backend.access() is None
+        board.dataForType_.return_value = None
+        assert backend.read(1024) is None
+
+
+def test_unreadable_change_is_reported_once_per_revision():
+    class EmptyCopy(FakeClipboard):
+        def read(self, max_bytes):
+            return None
+
+    backend, notes = EmptyCopy(), []
+    bridge = ClipboardBridge(backend, 1024, note=notes.append)
+    bridge.baseline()
+    backend.count += 1
+    assert bridge.changed() is None
+    assert bridge.changed() is None
+    assert notes == ["Clipboard changed but nothing readable was found "
+                     "(empty copy, files, or blocked access)"]
+
+
+def test_denied_pasteboard_read_is_reported_once_per_revision():
+    class Denied(FakeClipboard):
+        def read(self, max_bytes):
+            raise PermissionError("macOS denies clipboard reads")
+
+    backend = Denied()
+    bridge = ClipboardBridge(backend, 1024)
+    bridge.baseline()
+    backend.count += 1
+    with pytest.raises(PermissionError):
+        bridge.changed()
+    assert bridge.changed() is None
+
+
+def test_denied_pasteboard_is_surfaced_in_link_status():
+    class Denied(FakeClipboard):
+        def read(self, max_bytes):
+            raise PermissionError("macOS denies clipboard reads")
+
+    left, right = socket.socketpair()
+    channels = [FramedSocket(left), FramedSocket(right)]
+    backends = [Denied(), FakeClipboard()]
+    stopped = threading.Event()
+    statuses = []
+
+    def run(index):
+        try:
+            _serve_link(channels[index], backends[index], 1024 * 1024, stopped,
+                        statuses.append)
+        except (OSError, EOFError):
+            pass
+
+    workers = [threading.Thread(target=run, args=(index,)) for index in range(2)]
+    for worker in workers:
+        worker.start()
+    try:
+        time.sleep(0.1)
+        backends[0].count += 1
+        deadline = time.monotonic() + 3
+        while not any("Clipboard blocked" in message for message in statuses):
+            assert time.monotonic() < deadline, statuses
+            time.sleep(0.01)
+        assert backends[1].bundle is None
+    finally:
+        stopped.set()
+        for channel in channels:
+            channel.close()
+        for worker in workers:
+            worker.join(3)
+    assert all(not worker.is_alive() for worker in workers)
+
+
 def test_slow_image_conversion_does_not_trigger_two_second_idle_disconnect():
     class SlowClipboard(FakeClipboard):
         def read(self, max_bytes):
