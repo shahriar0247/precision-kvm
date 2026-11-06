@@ -380,9 +380,10 @@ def run_client_forever(config: dict, stop_event=None, status=print, config_path=
     tiling = None
     tap = None
     try:
-        if config.get("tiling_enabled"):
-            tiling = make_controller(config,
-                status=lambda message: status(f"Tiling: {message}"))
+        # Always present on supported platforms so a host can enable tiling
+        # mid-session via the activation event; the controller is hook-free.
+        tiling = make_controller(config,
+            status=lambda message: status(f"Tiling: {message}"))
         if sys.platform == "darwin" and tiling is not None:
             # Standalone chords on the Mac; stands down while a session controls it.
             from .tiling_mac import MacTilingTap
