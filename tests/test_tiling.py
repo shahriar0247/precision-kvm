@@ -2,8 +2,7 @@
 import unittest
 
 from precision_kvm import tiling
-from precision_kvm.tiling import (TilingEngine, DragController, chord_action,
-                                  _layout, Leaf, Split)
+from precision_kvm.tiling import DragController, TilingEngine, chord_action
 
 
 class FakeBackend:
@@ -29,9 +28,11 @@ class FakeBackend:
             if op[0] == "rect":
                 self.rects[op[1]] = op[2]
             elif op[0] == "show":
-                self.hidden.discard(op[1]); self.shown.add(op[1])
+                self.hidden.discard(op[1])
+                self.shown.add(op[1])
             elif op[0] == "hide":
-                self.shown.discard(op[1]); self.hidden.add(op[1])
+                self.shown.discard(op[1])
+                self.hidden.add(op[1])
 
 
 def make_engine(windows, mode="bsp", area=(0, 0, 1920, 1040)):
@@ -211,7 +212,7 @@ class DragTests(unittest.TestCase):
         rect = self.engine._rects["a"]
         self.drag.press(rect[0] + 10, rect[1] + 5)
         self.drag.move(5000, 5000)
-        ops = self.drag.release(5000, 5000)
+        self.drag.release(5000, 5000)
         self.assertIn("a", self.engine.space().floats)
 
     def test_resize_then_adapt(self):

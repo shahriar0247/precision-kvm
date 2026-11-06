@@ -137,16 +137,16 @@ def _adapt(node, rect, actual):
     x, y, w, h = rect
     if node.axis == "x":
         first = _leaves(node.first)
-        span = (max(actual[l.win][0] + actual[l.win][2] for l in first if l.win in actual)
-                - x) if first else 0
+        span = (max(actual[leaf.win][0] + actual[leaf.win][2] for leaf in first
+                    if leaf.win in actual) - x) if first else 0
         node.fraction = _split_fraction(w, span / (w - GAP)) if w > GAP else 0.5
         cut = round((w - GAP) * node.fraction)
         _adapt(node.first, (x, y, cut, h), actual)
         _adapt(node.second, (x + cut + GAP, y, max(1, w - cut - GAP), h), actual)
     else:
         first = _leaves(node.first)
-        span = (max(actual[l.win][1] + actual[l.win][3] for l in first if l.win in actual)
-                - y) if first else 0
+        span = (max(actual[leaf.win][1] + actual[leaf.win][3] for leaf in first
+                    if leaf.win in actual) - y) if first else 0
         node.fraction = _split_fraction(h, span / (h - GAP)) if h > GAP else 0.5
         cut = round((h - GAP) * node.fraction)
         _adapt(node.first, (x, y, w, cut), actual)
