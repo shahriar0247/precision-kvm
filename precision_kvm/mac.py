@@ -28,7 +28,7 @@ class MacInjector:
     """
 
     def __init__(self, on_return: Callable[[dict], None] | None = None,
-                 side: str = "left", quartz=None, appkit=None):
+                 side: str = "left", quartz=None, appkit=None, tiling=None):
         if quartz is None:
             if sys.platform != "darwin":
                 raise RuntimeError("MacInjector requires macOS")
@@ -36,6 +36,7 @@ class MacInjector:
             import AppKit as appkit_module
             quartz, appkit = quartz_module, appkit_module
         self.q, self.appkit = quartz, appkit
+        self.tiling = tiling
         self.on_return = on_return or (lambda event: None)
         if side not in ("left", "right", "top", "bottom"):
             raise ValueError("Invalid monitor side")
@@ -276,6 +277,8 @@ class MacInjector:
         kind = event.get("type")
         if kind == "activate":
             self.release_all()
+            if self.tiling is not None:
+                self.tiling.remote_active = True
             self.refresh_bounds()
             side = event.get("side",self.side)
             if side not in ("left","right","top","bottom"):
@@ -329,6 +332,9 @@ class MacInjector:
         if not self.active:
             return
         if kind == "move":
+            if self.tiling is not None and self.tiling.drag.active:
+                self.tiling.move(round(self.x), round(self.y))
+                return
             dx,dy = float(event.get("dx",0))*self.gain,float(event.get("dy",0))*self.gain
             if not math.isfinite(dx) or not math.isfinite(dy):
                 raise ValueError("Non-finite mouse movement")
@@ -357,6 +363,8 @@ class MacInjector:
         elif kind == "gesture":
             self._gesture(event.get("action"))
         elif kind == "button":
+            if self.tiling is not None and self._tiling_button(event):
+                return
             button = event["button"]
             button = {"left":0,"right":1,"middle":2,"x1":3,"x2":4}.get(button,button)
             button = int(button)
@@ -396,10 +404,29 @@ class MacInjector:
             else:
                 self._scroll_step(dx,dy)
 
+    def _tiling_button(self, event) -> bool:
+        """Consume forwarded presses that begin (or end) a tiling drag."""
+        if self.tiling is None:
+            return False
+        try:
+            x, y = round(self.x), round(self.y)
+            if event.get("down"):
+                if event.get("button") == "left" and self.tiling.press(x, y, "left"):
+                    return True
+                return False
+            if self.tiling.drag.active:
+                self.tiling.release(x, y)
+                return True
+            return False
+        except Exception:
+            return False
+
     def release_all(self):
         """Release injected state even if this session is already inactive."""
         with self._scroll_lock:
             self.active = False
+        if self.tiling is not None:
+            self.tiling.remote_active = False
         if self._smooth:
             self._smooth.cancel()
         for (kind,code),count in tuple(self._target_counts.items()):

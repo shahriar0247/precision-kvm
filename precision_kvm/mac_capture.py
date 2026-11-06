@@ -18,6 +18,7 @@ from typing import Callable
 
 from . import geometry
 from .keymap import SCAN_TO_MAC, VK_TO_MAC
+from .tiling import chord_action
 
 IS_MAC = sys.platform == "darwin"
 
@@ -77,9 +78,11 @@ class MacCapture:
                  side: str = "left", on_emergency: Callable[[str], None] | None = None,
                  peer_align: float = 0.5, peer_span: float = 0.6,
                  peers: dict | None = None, lock_sync: bool = True,
-                 **_ignored):
+                 tiling=None, **_ignored):
         self.on_event = on_event
         self.on_emergency = on_emergency or (lambda reason: None)
+        self.tiling = tiling
+        self._tiling_drag = False
         self.side = side
         self.peer_align = float(peer_align)
         self.peer_span = float(peer_span)
@@ -204,6 +207,18 @@ class MacCapture:
             return self._mouse(event)
         if kind in _EVT:
             what, button, down = _EVT[kind]
+            if (self.tiling is not None and not self.active and not self.locked
+                    and button == "left"):
+                loc = Quartz.CGEventGetLocation(event)
+                x, y = round(loc.x), round(loc.y)
+                if down:
+                    if self.tiling.press(x, y, "left"):
+                        self._tiling_drag = True
+                        return None
+                elif self._tiling_drag:
+                    self._tiling_drag = False
+                    self.tiling.release(x, y)
+                    return None
             if not self.active:
                 return event
             self.on_event({"type": what, "button": button, "down": down})
@@ -227,6 +242,9 @@ class MacCapture:
         loc = Quartz.CGEventGetLocation(event)
         x, y = float(loc.x), float(loc.y)
         mons = self._mons
+        if self._tiling_drag and not self.active:
+            self.tiling.move(round(x), round(y))
+            return None
         if not self.active:
             hit = geometry.hit(mons, self._peer_map(mons), round(x), round(y))
             if hit is None or not self.peer_connected:
@@ -281,6 +299,19 @@ class MacCapture:
                 self.release()
                 self.on_emergency("Escape held")
                 return event
+        if self.tiling is not None and down:
+            vk = MAC_TO_VK.get(code)
+            if vk is not None:
+                flags = Quartz.CGEventGetFlags(event)
+                mods = frozenset(mod for held, mod in (
+                    (flags & Quartz.kCGEventFlagMaskControl, "ctrl"),
+                    (flags & Quartz.kCGEventFlagMaskAlternate, "alt"),
+                    (flags & Quartz.kCGEventFlagMaskCommand, "win"),
+                    (flags & Quartz.kCGEventFlagMaskShift, "shift")) if held)
+                action = chord_action(vk, mods)
+                if action:
+                    self.on_event({"type": "tiling", "action": action})
+                    return None
         if not self.active:
             # Ctrl+Alt+F12 eject mirrors the Windows path.
             if code == 111 and down and cmd and ctrl:

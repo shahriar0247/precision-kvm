@@ -66,7 +66,8 @@ class ClientController:
                 if runner is None:
                     from .session import run_client_forever
                     runner = run_client_forever
-                runner(config, stop_event=self.stopped, status=self.post_status)
+                runner(config, stop_event=self.stopped, status=self.post_status,
+                       config_path=self.config_path)
             except Exception as exc:
                 failed = True
                 self.post_status(f"Client error: {type(exc).__name__}: {exc}")
@@ -129,6 +130,7 @@ class ClientController:
         config = self.configuration()
         config["tweaks"] = tweaks
         config["local_smooth_scroll"] = bool(values.get("local_smooth_scroll",False))
+        config["tiling_enabled"] = bool(values.get("tiling_enabled",False))
         self.config_path.parent.mkdir(parents=True,exist_ok=True)
         save_json(self.config_path,config)
 
@@ -338,6 +340,8 @@ def run_client_gui(config_path: Path):
         delegate.fields[name] = ("number",field)
 
     check("mac_layout","Mac keyboard layout: Alt = Command, Windows = Option",449,True)
+    check("tiling_enabled","Window tiling on this Mac — chords and mouse drags (also standalone)",484,
+          config.get("tiling_enabled",False))
     check("smooth_scroll","Smooth scrolling from the PC mouse",414,True)
     check("local_smooth_scroll","Also smooth this Mac's own mouse wheel",379,False)
     number("scroll_gain_y","Vertical scroll sensitivity",340,1)

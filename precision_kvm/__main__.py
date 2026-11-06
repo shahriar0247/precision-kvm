@@ -58,10 +58,12 @@ def main():
                         print("PrecisionKVM client is already running.", flush=True)
                         return
                     from .session import run_client_forever
-                    run_client_forever(json.loads(config_path.read_text()))
+                    run_client_forever(json.loads(config_path.read_text()),
+                                       config_path=config_path)
             else:
                 from .session import run_client_forever
-                run_client_forever(json.loads(config_path.read_text()))
+                run_client_forever(json.loads(config_path.read_text()),
+                                   config_path=config_path)
         except KeyboardInterrupt:
             pass
         except Exception as exc:

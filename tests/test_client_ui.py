@@ -16,7 +16,7 @@ def config_path(tmp_path):
 def test_worker_start_stop_and_duplicate_launch(tmp_path):
     entered = threading.Event()
 
-    def runner(config, stop_event, status):
+    def runner(config, stop_event, status, config_path=None):
         status("Connected")
         entered.set()
         stop_event.wait(2)

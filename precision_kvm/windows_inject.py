@@ -48,9 +48,11 @@ class WindowsInjector:
     """Receives input events on Windows and posts them as local input."""
 
     def __init__(self, on_return: Callable[[dict], None] | None = None,
-                 on_error: Callable[[Exception], None] | None = None):
+                 on_error: Callable[[Exception], None] | None = None,
+                 tiling=None):
         self.on_return = on_return or (lambda event: None)
         self.on_error = on_error or (lambda exc: None)
+        self.tiling = tiling
         self.active = False
         self.side = "left"
         self.gain = 1.0
@@ -87,8 +89,13 @@ class WindowsInjector:
             elif not self.active:
                 return
             elif kind == "move":
+                if self.tiling is not None and self.tiling.drag.active:
+                    self.tiling.move(round(self.x), round(self.y))
+                    return
                 self._move(event)
             elif kind == "button":
+                if self._tiling_button(event):
+                    return
                 self._button(event)
             elif kind == "scroll":
                 self._scroll(event)
@@ -97,9 +104,29 @@ class WindowsInjector:
         except Exception as exc:  # malformed network input must not kill the loop
             self.on_error(exc)
 
+    def _tiling_button(self, event) -> bool:
+        """Consume forwarded presses that begin (or end) a tiling drag."""
+        if self.tiling is None:
+            return False
+        try:
+            x, y = round(self.x), round(self.y)
+            if event.get("down"):
+                if event.get("button") == "left" and self.tiling.press(x, y, "left"):
+                    return True
+                return False
+            if self.tiling.drag.active:
+                self.tiling.release(x, y)
+                return True
+            return False
+        except Exception as exc:
+            self.on_error(exc)
+            return False
+
     def _activate(self, event):
         self.release_all()
         self.refresh_bounds()
+        if self.tiling is not None:
+            self.tiling.remote_active = True
         side = event.get("side", self.side)
         if side not in ("left", "right", "top", "bottom"):
             raise ValueError("Invalid monitor side")
@@ -207,6 +234,8 @@ class WindowsInjector:
 
     def release_all(self):
         self.active = False
+        if self.tiling is not None:
+            self.tiling.remote_active = False
         if self._mouse_params is not None:
             params = (ctypes.c_int * 3)(*self._mouse_params)
             user.SystemParametersInfoW(SPI_SETMOUSE, 0, ctypes.byref(params), 0)

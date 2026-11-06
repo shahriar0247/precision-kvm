@@ -60,6 +60,8 @@ DISPLAY_OPTIONS = {
     "scroll_mode": {"pixel": "Smooth pixels", "line": "Traditional lines"},
     "keymap_preset": {"option_cmd": "Mac layout · Alt = Command, Win = Option", "native": "Windows modifiers",
                       "ctrl_cmd": "Swap Ctrl and Command", "mac_layout": "Mac layout · Control unchanged"},
+    "tiling_mode": {"bsp": "BSP splits · balanced binary tree",
+                    "horizontal": "Horizontal columns · focused stays on screen"},
 }
 
 
@@ -173,12 +175,12 @@ class ControlPanel:
         notebook = ttk.Notebook(panel, style="Panel.TNotebook")
         notebook.pack(fill="both", expand=True)
         self._scrollframes: list[ScrollFrame] = []
-        connection, inputs, keys, sharing, tweaks, wtweaks, logs, screen = (
-            ttk.Frame(notebook, padding=18) for _ in range(8))
+        connection, inputs, keys, sharing, tweaks, wtweaks, logs, screen, tiling = (
+            ttk.Frame(notebook, padding=18) for _ in range(9))
         bodies = []
         for frame, title in ((connection, "Connection"), (inputs, "Mouse & gestures"),
                              (keys, "Key remapping"), (tweaks, "Mac Tweaks"),
-                             (wtweaks, "Windows Tweaks"),
+                             (wtweaks, "Windows Tweaks"), (tiling, "Window tiling"),
                              (sharing, "Clipboard & safety"), (logs, "Activity log"),
                              (screen, "Screen share")):
             if frame is logs:
@@ -190,7 +192,7 @@ class ControlPanel:
             scroller.body.columnconfigure(1, weight=1)
             self._scrollframes.append(scroller)
             bodies.append(scroller.body)
-        connection, inputs, keys, tweaks, wtweaks, sharing, screen = bodies
+        connection, inputs, keys, tweaks, wtweaks, tiling, sharing, screen = bodies
         logs.rowconfigure(0, weight=1)
         logs.columnconfigure(0, weight=1)
         self.log_text = tk.Text(logs, wrap="none", height=16, bg=card, fg=ink,
@@ -424,6 +426,19 @@ class ControlPanel:
                   "only to Windows clients — macOS clients ignore them.\n\n"
                   "Pointer acceleration stays disabled until control returns; the original "
                   "setting is restored when sharing ends.")
+        self.check(tiling, 0, "Enable window tiling on both computers", "tiling_enabled")
+        self.field(tiling, 1, "Layout", "tiling_mode", ("bsp", "horizontal"))
+        self.note(tiling, 2,
+                  "Chords act on whichever computer the mouse is on and are swallowed before the\n"
+                  "OS sees them, so desktop switching never fires:\n"
+                  "Ctrl+Win+arrows (PC) / Ctrl+Option+arrows (Mac) — focus the window that way\n"
+                  "Alt+1…6 (PC) / Option+1…6 (Mac) — jump to a workspace\n"
+                  "Ctrl+Alt+1…6 — send the focused window to that workspace and follow it\n"
+                  "Ctrl+Alt+W — float or re-tile the focused window\n\n"
+                  "Mouse: drag a window's title bar to move it — drop on another window to swap\n"
+                  "places, on empty space to float it. Drag a tile edge to resize; the layout adapts.\n"
+                  "Tiling manages windows on the display that has keyboard focus.\n"
+                  "Restart sharing after changing these settings.")
         self.check(sharing, 0, "Share clipboard text and images in both directions", "clipboard_enabled")
         self.field(sharing, 1, "Maximum clipboard size (MiB)", "clipboard_max_mb", bounds=(1, 512, 1))
         self.note(sharing, 2, "New copies sync over a separate encrypted connection, keeping large copies\n"

@@ -11,8 +11,9 @@ import time
 from typing import Callable, TYPE_CHECKING
 
 from . import __version__
-from .config import identity, state_dir
+from .config import identity, save_json, state_dir
 from .clipboard import ClipboardClient, ClipboardServer
+from .tiling import make_controller
 from .transport import (BackpressureError, EventBuffer, FramedSocket, PlainListener,
                         ProtocolError, Receiver, Sender, TLSListener, authenticate,
                         connect, fetch_fingerprint)
@@ -57,6 +58,7 @@ class HostSession:
         self.screen: ScreenShareServer | None = None
         self.advertiser: Advertiser | None = None
         self.emergency_reason = ""
+        self.tiling = None
 
     def start(self):
         if self.thread and self.thread.is_alive():
@@ -71,6 +73,7 @@ class HostSession:
         self._disconnect()
         if self.capture:
             self.capture.stop()
+        self.tiling = None
         if self.clipboard:
             self.clipboard.stop()
         if self.screen:
@@ -154,6 +157,16 @@ class HostSession:
 
     def _emit(self, event):
         try:
+            if event.get("type") == "tiling":
+                # The focused computer acts: forward while sharing, else local.
+                link = self.active_link
+                if link is not None and link.buffer is not None:
+                    link.buffer.put(event)
+                    return True
+                if self.tiling is not None:
+                    self.tiling.handle(str(event.get("action") or ""))
+                    return True
+                return False
             if event.get("type") == "activate":
                 event = dict(event, side=event.get("side") or self.settings["side"],
                              gain=self.settings["gain"],
@@ -162,7 +175,8 @@ class HostSession:
                 for name in ("scroll_gain_x", "scroll_gain_y", "scroll_invert_x", "scroll_invert_y",
                              "scroll_mode", "keymap", "keymap_preset", "smooth_scroll",
                              "smooth_scroll_ms", "smooth_scroll_hz", "windows_home_end",
-                             "windows_word_nav", "win_mouse_accel_off", "win_lock_on_return"):
+                             "windows_word_nav", "win_mouse_accel_off", "win_lock_on_return",
+                             "tiling_enabled", "tiling_mode"):
                     if name in self.settings:
                         event[name] = self.settings[name]
                 link = self._link_for(str(event.get("peer") or ""))
@@ -240,6 +254,10 @@ class HostSession:
                     native_touchpad=self.settings.get("native_touchpad", False),
                     emergency_escape_seconds=self.settings.get("emergency_escape_seconds", 1.5),
                     mac_mode=self.settings.get("mac_mode", False))
+            if self.settings.get("tiling_enabled"):
+                self.tiling = make_controller(self.settings,
+                                              status=lambda message: self.status(str(message)))
+            capture_kwargs["tiling"] = self.tiling
             self.capture = Capture(self._emit, **capture_kwargs)
             self.capture.start()
             self.ready.set()
@@ -354,12 +372,22 @@ class HostSession:
             self.rtt_ms = float(event["ms"])
 
 
-def run_client_forever(config: dict, stop_event=None, status=print):
+def run_client_forever(config: dict, stop_event=None, status=print, config_path=None):
     """Retry on a one-second start-to-start cadence without overlapping attempts."""
     stop_event = stop_event if stop_event is not None else threading.Event()
     clipboard = None
     screen = None
+    tiling = None
+    tap = None
     try:
+        if config.get("tiling_enabled"):
+            tiling = make_controller(config,
+                status=lambda message: status(f"Tiling: {message}"))
+        if sys.platform == "darwin" and tiling is not None:
+            # Standalone chords on the Mac; stands down while a session controls it.
+            from .tiling_mac import MacTilingTap
+            tap = MacTilingTap(tiling, status=status)
+            tap.start()
         if config.get("auto"):
             # Resolve before the side-channel clients start: they snapshot the
             # config, so a stale port would never be corrected for them.
@@ -377,7 +405,8 @@ def run_client_forever(config: dict, stop_event=None, status=print):
         while not stop_event.is_set():
             started = time.monotonic()
             try:
-                run_client(config, connect_timeout=0.8, stop_event=stop_event, status=status)
+                run_client(config, connect_timeout=0.8, stop_event=stop_event,
+                           status=status, tiling=tiling, config_path=config_path)
             except (OSError, EOFError, ProtocolError, BackpressureError) as exc:
                 status(f"Server unavailable / disconnected ({type(exc).__name__}); retrying every second")
                 if config.get("auto"):
@@ -385,6 +414,8 @@ def run_client_forever(config: dict, stop_event=None, status=print):
             if stop_event.wait(max(0.0, 1.0 - (time.monotonic() - started))):
                 break
     finally:
+        if tap:
+            tap.stop()
         if screen:
             screen.stop()
         if clipboard:
@@ -416,6 +447,19 @@ def _resolve_host(config: dict, status) -> None:
             return
 
 
+def _persist_tiling(config: dict, config_path, tiling) -> None:
+    """Remember the host's tiling choices so standalone Mac chords survive
+    a client restart without waiting for the next crossing."""
+    if config_path is None:
+        return
+    try:
+        config["tiling_enabled"] = bool(tiling.enabled)
+        config["tiling_mode"] = tiling.engine.mode
+        save_json(config_path, config)
+    except (OSError, ValueError):
+        pass
+
+
 def _reachable(host: str, port: int, timeout: float = 0.6) -> bool:
     try:
         with socket.create_connection((host, port), timeout):
@@ -424,7 +468,8 @@ def _reachable(host: str, port: int, timeout: float = 0.6) -> bool:
         return False
 
 
-def run_client(config: dict, connect_timeout=3, stop_event=None, status=print):
+def run_client(config: dict, connect_timeout=3, stop_event=None, status=print,
+               tiling=None, config_path=None):
     if sys.platform == "darwin":
         from .mac import MacInjector as Injector
         if not Injector.accessibility_available(prompt=True):
@@ -434,7 +479,7 @@ def run_client(config: dict, connect_timeout=3, stop_event=None, status=print):
         from .windows_inject import WindowsInjector as Injector
     stopped = threading.Event()
     buffer = EventBuffer(120)
-    injector = Injector(on_return=buffer.put)
+    injector = Injector(on_return=buffer.put, tiling=tiling)
     channel = None
     sender = None
     workers = []
@@ -476,6 +521,9 @@ def run_client(config: dict, connect_timeout=3, stop_event=None, status=print):
         def receive(event):
             if event.get("type") == "pong":
                 buffer.put({"type": "rtt", "ms": (time.perf_counter() - event["stamp"]) * 1000})
+            elif event.get("type") == "tiling":
+                if tiling is not None:
+                    tiling.handle(str(event.get("action") or ""))
             else:
                 if event.get("type") == "activate":
                     tweaks = config.get("tweaks", {})
@@ -486,6 +534,10 @@ def run_client(config: dict, connect_timeout=3, stop_event=None, status=print):
                                "win_mouse_accel_off", "win_lock_on_return")
                     if isinstance(tweaks, dict):
                         event = dict(event, **{name: tweaks[name] for name in allowed if name in tweaks})
+                    if tiling is not None:
+                        tiling.set_enabled(bool(event.get("tiling_enabled", False)))
+                        tiling.set_mode(str(event.get("tiling_mode", "bsp")))
+                        _persist_tiling(config, config_path, tiling)
                 injector.handle(event)
 
         def watch_stop():
