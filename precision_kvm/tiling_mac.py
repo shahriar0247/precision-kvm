@@ -19,10 +19,13 @@ if sys.platform != "darwin":
     raise OSError("MacTiling requires macOS")
 
 import AppKit
+import ApplicationServices as ax_services
 import Quartz
 
 from .keymap import SCAN_TO_MAC, VK_TO_MAC
 from .tiling import chord_action
+
+AX = ax_services  # AXUIElement* and AXValue* live here, not in Quartz
 
 # Windows VK -> mac keycode (reverse of keymap), for chord translation.
 MAC_TO_VK = {mac: vk for vk, mac in VK_TO_MAC.items()}
@@ -38,7 +41,7 @@ AX_STANDARD = ("AXStandardWindow", "AXDialog")
 
 def _attr(ref, name):
     try:
-        result = Quartz.AXUIElementCopyAttributeValue(ref, name, None)
+        result = AX.AXUIElementCopyAttributeValue(ref, name, None)
     except Exception:
         return None
     if isinstance(result, tuple):
@@ -49,13 +52,13 @@ def _attr(ref, name):
 
 def _set(ref, name, value):
     try:
-        Quartz.AXUIElementSetAttributeValue(ref, name, value)
+        AX.AXUIElementSetAttributeValue(ref, name, value)
     except Exception:
         pass
 
 
 def _pair(value, ktype):
-    result = Quartz.AXValueGetValue(value, ktype, None)
+    result = AX.AXValueGetValue(value, ktype, None)
     if isinstance(result, tuple):
         if len(result) >= 3 and isinstance(result[1], (int, float)):
             return (float(result[1]), float(result[2]))
@@ -70,8 +73,8 @@ def _rect_of(window):
     size = _attr(window, "AXSize")
     if position is None or size is None:
         return None
-    x, y = _pair(position, Quartz.kAXValueTypeCGPoint)
-    w, h = _pair(size, Quartz.kAXValueTypeCGSize)
+    x, y = _pair(position, AX.kAXValueTypeCGPoint)
+    w, h = _pair(size, AX.kAXValueTypeCGSize)
     if w < 80 or h < 60:
         return None
     return (round(x), round(y), round(w), round(h))
@@ -110,7 +113,7 @@ class MacTiling:
                     or app.isHidden() or app.processIdentifier() == self._own):
                 continue
             pid = app.processIdentifier()
-            app_ref = Quartz.AXUIElementCreateApplication(pid)
+            app_ref = AX.AXUIElementCreateApplication(pid)
             _set(app_ref, "AXManualAccessibility", True)
             windows = _attr(app_ref, "AXWindows")
             if not windows:
@@ -134,7 +137,7 @@ class MacTiling:
                 or app.activationPolicy() != AppKit.NSApplicationActivationPolicyRegular
                 or app.processIdentifier() == self._own):
             return None
-        app_ref = Quartz.AXUIElementCreateApplication(app.processIdentifier())
+        app_ref = AX.AXUIElementCreateApplication(app.processIdentifier())
         window = _attr(app_ref, "AXFocusedWindow")
         if window is None:
             return None
@@ -174,8 +177,8 @@ class MacTiling:
             return
         ref = entry["ref"]
         x, y, w, h = (round(v) for v in rect)
-        _set(ref, "AXSize", Quartz.AXValueCreate(Quartz.kAXValueTypeCGSize, (w, h)))
-        _set(ref, "AXPosition", Quartz.AXValueCreate(Quartz.kAXValueTypeCGPoint, (x, y)))
+        _set(ref, "AXSize", AX.AXValueCreate(AX.kAXValueTypeCGSize, (w, h)))
+        _set(ref, "AXPosition", AX.AXValueCreate(AX.kAXValueTypeCGPoint, (x, y)))
 
     def apply(self, ops):
         for op in ops:
@@ -200,7 +203,7 @@ class MacTiling:
         _set(entry["ref"], "AXMinimized", False)
         _set(entry["ref"], "AXMain", True)
         try:
-            Quartz.AXUIElementPerformAction(entry["ref"], "AXRaise")
+            AX.AXUIElementPerformAction(entry["ref"], "AXRaise")
         except Exception:
             pass
         app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(

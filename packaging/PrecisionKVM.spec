@@ -29,7 +29,7 @@ excludes = [
 ]
 if sys.platform == "darwin":
     excludes += ["tkinter", "_tkinter"]
-    for package in ("Quartz", "AppKit", "Foundation", "objc"):
+    for package in ("Quartz", "AppKit", "Foundation", "ApplicationServices", "objc"):
         try:
             package_datas, package_binaries, package_hidden = collect_all(package)
             datas += package_datas

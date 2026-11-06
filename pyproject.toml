@@ -20,7 +20,8 @@ Issues = "https://github.com/shahriar0247/precision-kvm/issues"
 Releases = "https://github.com/shahriar0247/precision-kvm/releases"
 
 [project.optional-dependencies]
-mac = ["pyobjc-framework-Quartz>=10", "pyobjc-framework-Cocoa>=10"]
+mac = ["pyobjc-framework-Quartz>=10", "pyobjc-framework-Cocoa>=10",
+       "pyobjc-framework-ApplicationServices>=10"]
 ui = ["pystray>=0.19"]
 dev = ["pytest>=8", "ruff", "mypy", "build"]
 
