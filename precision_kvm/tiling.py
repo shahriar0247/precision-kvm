@@ -13,6 +13,7 @@ always stays fully on screen.
 from __future__ import annotations
 
 import sys
+import threading
 
 GAP = 6               # pixels between tiles
 EDGE = 12             # resize grab zone, pixels from a tile edge
@@ -190,6 +191,7 @@ class TilingEngine:
         self.current = 0
         self.area = (0, 0, 1920, 1040)
         self._rects: dict = {}
+        self._applied: dict = {}
         self._missing: dict = {}
 
     # -- reconciliation ------------------------------------------------------
@@ -304,7 +306,12 @@ class TilingEngine:
         elif tiled:
             self._horizontal(tiled, space.focused, rects)
         self._rects = rects
-        ops = [("rect", win, rect) for win, rect in rects.items()]
+        # Only re-place windows whose tile actually changed; the sync loop
+        # runs continuously and must not spam position calls.
+        previous = self._applied
+        self._applied = dict(rects)
+        ops = [("rect", win, rect) for win, rect in rects.items()
+               if previous.get(win) != rect]
         ops.extend(("show", win) for win in list(space.hidden))
         space.hidden.clear()
         return ops
@@ -519,15 +526,42 @@ class DragController:
 
 class TilingController:
     """Owns the engine and backend for one machine; chord and drag entry
-    points are called from native hook threads and must never raise."""
+    points are called from native hook threads and must never raise.
 
-    def __init__(self, backend, mode="bsp", status=print):
+    A background sync loop keeps the layout live: new windows are tiled
+    as they appear, closed ones pruned, and the layout reasserted —
+    this is what makes the desktop actually tile, chords only steer it.
+    """
+
+    def __init__(self, backend, mode="bsp", status=print, interval=0.8):
         self.backend = backend
         self.engine = TilingEngine(mode)
         self.drag = DragController(self.engine, backend)
         self.enabled = True
         self.remote_active = False
         self._status = status
+        self._interval = interval
+        self._stopping = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._stopping.clear()
+        self._thread = threading.Thread(target=self._loop, name="kvm-tiling-sync",
+                                        daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stopping.set()
+        if self._thread and self._thread is not threading.current_thread():
+            self._thread.join(3)
+        self._thread = None
+
+    def _loop(self):
+        while not self._stopping.wait(self._interval):
+            if self.enabled and not self.drag.active:
+                self.refresh()
 
     def set_enabled(self, value: bool):
         self.enabled = bool(value)
@@ -544,24 +578,26 @@ class TilingController:
         except Exception as exc:
             self._status(f"Tiling: {type(exc).__name__}: {exc}")
 
-    def refresh(self):
-        """Sync engine state with reality and apply the current layout."""
-        def work():
-            wins = self.backend.windows()
-            ops = self.engine.sync([win for win, _ in wins],
-                                   self.backend.focused(), self.backend.work_area())
+    def _sync_apply(self):
+        """Reconcile with reality and apply pending layout ops."""
+        wins = self.backend.windows()
+        ops = self.engine.sync([win for win, _ in wins],
+                               self.backend.focused(), self.backend.work_area())
+        if ops:
             self.backend.apply(ops)
-        self._safe(work)
+
+    def refresh(self):
+        self._safe(self._sync_apply)
 
     def handle(self, action: str):
         if self.enabled:
             self._safe(lambda: self._handle(action))
 
     def _handle(self, action):
-        wins = self.backend.windows()
-        self.engine.sync([win for win, _ in wins],
-                         self.backend.focused(), self.backend.work_area())
-        self.backend.apply(self.engine.handle(action))
+        self._sync_apply()
+        ops = self.engine.handle(action)
+        if ops:
+            self.backend.apply(ops)
 
     def press(self, x, y, button="left") -> bool:
         """True when the press was hijacked for a tiling drag."""
@@ -570,9 +606,7 @@ class TilingController:
         state = []
 
         def work():
-            wins = self.backend.windows()
-            self.engine.sync([win for win, _ in wins],
-                             self.backend.focused(), self.backend.work_area())
+            self._sync_apply()
             state.append(self.drag.press(x, y, button))
         self._safe(work)
         return bool(state and state[0])

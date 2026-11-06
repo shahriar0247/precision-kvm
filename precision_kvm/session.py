@@ -73,6 +73,8 @@ class HostSession:
         self._disconnect()
         if self.capture:
             self.capture.stop()
+        if self.tiling:
+            self.tiling.stop()
         self.tiling = None
         if self.clipboard:
             self.clipboard.stop()
@@ -260,6 +262,8 @@ class HostSession:
             capture_kwargs["tiling"] = self.tiling
             self.capture = Capture(self._emit, **capture_kwargs)
             self.capture.start()
+            if self.tiling:
+                self.tiling.start()
             self.ready.set()
             self.status("Waiting for paired client; local input remains active")
             while not self.stopped.is_set():
@@ -389,6 +393,8 @@ def run_client_forever(config: dict, stop_event=None, status=print, config_path=
             from .tiling_mac import MacTilingTap
             tap = MacTilingTap(tiling, status=status)
             tap.start()
+        if tiling is not None:
+            tiling.start()
         if config.get("auto"):
             # Resolve before the side-channel clients start: they snapshot the
             # config, so a stale port would never be corrected for them.
@@ -417,6 +423,8 @@ def run_client_forever(config: dict, stop_event=None, status=print, config_path=
     finally:
         if tap:
             tap.stop()
+        if tiling is not None:
+            tiling.stop()
         if screen:
             screen.stop()
         if clipboard:
