@@ -191,7 +191,6 @@ class TilingEngine:
         self.current = 0
         self.area = (0, 0, 1920, 1040)
         self._rects: dict = {}
-        self._applied: dict = {}
         self._missing: dict = {}
 
     # -- reconciliation ------------------------------------------------------
@@ -306,12 +305,7 @@ class TilingEngine:
         elif tiled:
             self._horizontal(tiled, space.focused, rects)
         self._rects = rects
-        # Only re-place windows whose tile actually changed; the sync loop
-        # runs continuously and must not spam position calls.
-        previous = self._applied
-        self._applied = dict(rects)
-        ops = [("rect", win, rect) for win, rect in rects.items()
-               if previous.get(win) != rect]
+        ops = [("rect", win, rect) for win, rect in rects.items()]
         ops.extend(("show", win) for win in list(space.hidden))
         space.hidden.clear()
         return ops
@@ -579,10 +573,17 @@ class TilingController:
             self._status(f"Tiling: {type(exc).__name__}: {exc}")
 
     def _sync_apply(self):
-        """Reconcile with reality and apply pending layout ops."""
+        """Reconcile with reality and apply pending layout ops.
+
+        Rect ops are filtered against the windows' real positions: a window
+        already sitting in its tile is left alone (no per-tick churn), while
+        one the user dragged away is pulled back into its tile.
+        """
         wins = self.backend.windows()
+        actual = dict(wins)
         ops = self.engine.sync([win for win, _ in wins],
                                self.backend.focused(), self.backend.work_area())
+        ops = [op for op in ops if op[0] != "rect" or actual.get(op[1]) != op[2]]
         if ops:
             self.backend.apply(ops)
 
@@ -595,7 +596,10 @@ class TilingController:
 
     def _handle(self, action):
         self._sync_apply()
-        ops = self.engine.handle(action)
+        wins = self.backend.windows()
+        actual = dict(wins)
+        ops = [op for op in self.engine.handle(action)
+               if op[0] != "rect" or actual.get(op[1]) != op[2]]
         if ops:
             self.backend.apply(ops)
 
