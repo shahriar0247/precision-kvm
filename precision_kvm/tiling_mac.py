@@ -65,6 +65,8 @@ def _pair(value, ktype):
         point = result[-1]
     else:
         point = result
+    if hasattr(point, "width"):
+        return (float(point.width), float(point.height))
     return (float(point.x), float(point.y))
 
 
