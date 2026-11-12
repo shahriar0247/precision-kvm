@@ -18,11 +18,11 @@ def main():
     parser = argparse.ArgumentParser(description="PrecisionKVM encrypted input and clipboard sharing")
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command")
-    gui = commands.add_parser("gui", help="Open the control panel (host or client, per the role setting)")
+    gui = commands.add_parser("gui", help="Open the control panel (host or client, chosen in the app)")
     gui.add_argument("--start", action="store_true", help="Start sharing immediately")
     client = commands.add_parser("client", help="Run reconnecting input client in a terminal")
     client.add_argument("--config", type=Path, required=True)
-    client_gui = commands.add_parser("client-gui", help="Open the control panel in client mode")
+    client_gui = commands.add_parser("client-gui", help="Alias for gui (kept for existing shortcuts)")
     client_gui.add_argument("--config", type=Path)
     startup = commands.add_parser("install-startup", help="Start Mac client UI at login")
     startup.add_argument("--config", type=Path)
@@ -30,22 +30,15 @@ def main():
     commands.add_parser("identity", help="Create local pairing identity; print public fingerprint only")
     commands.add_parser("doctor", help="Check native dependencies and permissions without posting input")
     args = parser.parse_args()
-    command = args.command or ("client-gui" if sys.platform == "darwin" else "gui")
+    command = args.command or "gui"
     if command in ("gui", "client-gui"):
         if sys.platform == "darwin":
-            # Native AppKit client panel — the Mac bundle ships without Tk.
+            # Native AppKit panel — the Mac bundle ships without Tk.
             from .client_ui import run_client_gui
             run_client_gui(getattr(args, "config", None) or state_dir() / "client.json")
             return
         from .ui import run_ui
-        if command == "client-gui":
-            # Client entry point: default to client role when none is saved.
-            from .config import load_settings, save_json
-            settings = load_settings()
-            if settings.get("role", "host") == "host":
-                settings["role"] = "client"
-                save_json(state_dir() / "settings.json", settings)
-        run_ui(start=getattr(args, "start", command == "client-gui"))
+        run_ui(start=getattr(args, "start", False))
     elif command == "client":
         config_path = getattr(args, "config", None) or state_dir() / "client.json"
         try:

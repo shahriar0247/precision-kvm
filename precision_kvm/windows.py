@@ -14,7 +14,6 @@ from typing import Any, Callable
 from . import geometry
 from .gestures import GestureShortcutBridge
 from .safety import EmergencyMonitor
-from .tiling import chord_action
 from .touchpad import WindowsTouchpads
 
 
@@ -46,7 +45,7 @@ class WindowsCapture:
                  high_resolution_timer: bool = False, on_emergency=None,
                  emergency_escape_seconds=1.5, mouse_mode="raw", gesture_bridge=True,
                  native_touchpad=False, mac_mode=False, lock_sync=True,
-                 peer_align=0.5, peer_span=0.6, peers=None, tiling=None):
+                 peer_align=0.5, peer_span=0.6, peers=None):
         if side not in {"left", "right", "top", "bottom"}:
             raise ValueError("side must be left, right, top, or bottom")
         self.on_event = on_event
@@ -71,8 +70,6 @@ class WindowsCapture:
         self._hit: tuple | None = None
         self._mac_alt = self._mac_ctrl = self._mac_alt_injected = False
         self.touchpads: WindowsTouchpads | None = None
-        self.tiling = tiling
-        self._tiling_drag = False
         self._emergency_requested = False
         self.peer_connected = False
         self.active = False
@@ -182,9 +179,37 @@ class WindowsCapture:
         self._hit = geometry.hit(mons, self._peer_map(mons), x, y)
         return self._hit is not None
 
+    @staticmethod
+    def _unthrottle(kernel):
+        """Opt the process out of EcoQoS and timer-resolution throttling.
+
+        Since Windows 10 2004 the OS ignores a process's timeBeginPeriod
+        request while every one of its windows is minimized or occluded, and
+        Windows 11 can additionally run hidden processes in efficiency mode.
+        Both collapse ~1 ms input pacing to the ~15.6 ms tick. Process-wide;
+        applied once when the capture thread starts.
+        """
+        if not hasattr(kernel, "SetProcessInformation"):
+            return
+
+        class PowerThrottling(ctypes.Structure):
+            _fields_ = [("version", wintypes.ULONG), ("control", wintypes.ULONG),
+                        ("state", wintypes.ULONG)]
+
+        kernel.SetProcessInformation.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                 ctypes.c_void_p, wintypes.DWORD]
+        kernel.SetProcessInformation.restype = wintypes.BOOL
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        # ProcessPowerThrottling (4): ControlMask selects EXECUTION_SPEED (1)
+        # and IGNORE_TIMER_RESOLUTION (4); StateMask 0 disables both.
+        state = PowerThrottling(1, 1 | 4, 0)
+        kernel.SetProcessInformation(kernel.GetCurrentProcess(), 4,
+                                     ctypes.byref(state), ctypes.sizeof(state))
+
     def _run(self):
         user = ctypes.WinDLL("user32", use_last_error=True)
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._unthrottle(kernel)
         # Raw pixels and edge coordinates must use the same DPI coordinate space.
         if hasattr(user, "SetThreadDpiAwarenessContext"):
             user.SetThreadDpiAwarenessContext.argtypes = [wintypes.HANDLE]
@@ -234,19 +259,6 @@ class WindowsCapture:
                 data = ctypes.cast(pointer, ctypes.POINTER(Mouse)).contents
                 if data.flags & 1:  # Never re-capture injected input.
                     return next_hook(code, message, pointer)
-                if self._tiling_drag:
-                    if message == 0x0202:
-                        self._tiling_drag = False
-                        self.tiling.release(data.pt.x, data.pt.y)
-                    elif message == 0x0200:
-                        self.tiling.move(data.pt.x, data.pt.y)
-                    return 1
-                if (message == 0x0201 and self.tiling is not None
-                        and not self.active and not self._stopping.is_set()
-                        and not self.locked):
-                    if self.tiling.press(data.pt.x, data.pt.y, "left"):
-                        self._tiling_drag = True
-                        return 1
                 if message == 0x0200:
                     x, y = data.pt.x, data.pt.y
                     if not self.active:
@@ -326,15 +338,6 @@ class WindowsCapture:
                 if data.vk == 0x7B and down and ctrl and alt:
                     self.release()
                     return 1
-                if self.tiling is not None and down:
-                    mods = frozenset(mod for held, mod in (
-                        (ctrl, "ctrl"), (alt, "alt"),
-                        (bool(self._keys & {0x5B, 0x5C}), "win"),
-                        (bool(self._keys & {0x10, 0xA0, 0xA1}), "shift")) if held)
-                    action = chord_action(data.vk, mods)
-                    if action:
-                        self._emit({"type": "tiling", "action": action})
-                        return 1
                 if self.active:
                     self._emit({"type": "key", "vk": data.vk, "scan": data.scan,
                                 "down": down, "extended": bool(data.flags & 1)})

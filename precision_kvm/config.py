@@ -52,8 +52,7 @@ def load_settings() -> dict:
                 "screen_share": True, "screen_enabled": False,
                 "screen_fps": 15, "screen_quality": 60, "screen_scale": 1.0,
                 "screen_gray": False, "screen_kbps": 8000, "screen_monitor": 0,
-                "screen_cursor": True,
-                "tiling_enabled": False, "tiling_mode": "bsp"}
+                "screen_cursor": True}
     if path.exists():
         saved = json.loads(path.read_text(encoding="utf-8"))
         settings.update(saved)
@@ -91,11 +90,8 @@ def validate_settings(settings: dict) -> dict:
         if result[key] not in allowed:
             raise ValueError(f"Invalid {key}")
     for key in ("tls", "discovery", "lock_sync",
-                "win_mouse_accel_off", "win_lock_on_return",
-                "tiling_enabled"):
+                "win_mouse_accel_off", "win_lock_on_return"):
         result[key] = bool(result[key])
-    if result.get("tiling_mode") not in ("bsp", "horizontal"):
-        raise ValueError("Invalid tiling_mode")
     peers = {}
     for name, rect in (result.get("peers") or {}).items():
         if not re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", str(name)) or not isinstance(rect, dict):
