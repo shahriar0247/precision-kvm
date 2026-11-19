@@ -1,0 +1,347 @@
+"""Linux evdev capture. Importing this module never opens input devices.
+
+Devices are read un-grabbed while local — the compositor keeps working and
+the class tracks a virtual cursor from REL/ABS deltas. On a peer-edge hit
+the devices are grabbed (EVIOCGRAB), stealing input from the compositor;
+release()/return_local() ungrabs so control comes back instantly.
+
+The virtual cursor cannot see the compositor's real pointer position, so
+it converges to reality at screen edges (clamp) rather than exactly — a
+documented approximation used by all evdev-level KVM switches.
+"""
+from __future__ import annotations
+
+import select
+import sys
+import threading
+from typing import Callable
+
+from . import geometry
+from .linux_input import (ABS_X, ABS_Y, BTN_LEFT, BTN_RIGHT, BTN_MIDDLE,
+                          BTN_SIDE, BTN_EXTRA, EV_ABS, EV_KEY, EV_REL,
+                          REL_HWHEEL, REL_HWHEEL_HI_RES, REL_WHEEL,
+                          REL_WHEEL_HI_RES, REL_X, REL_Y, EvdevDevice,
+                          evdev_key_id, input_devices, linux_monitors, selector)
+from .safety import EmergencyMonitor
+
+_BUTTON_NAMES = {BTN_LEFT: "left", BTN_RIGHT: "right", BTN_MIDDLE: "middle",
+                 BTN_SIDE: "x1", BTN_EXTRA: "x2"}
+
+PRESS_EVENTS = 2     # consecutive pushes toward an edge before crossing
+REARM_DISTANCE = 48  # px the cursor must retreat before an edge re-arms
+
+
+class LinuxCapture:
+    """Share Linux input when the virtual cursor crosses the peer edge."""
+
+    def __init__(self, on_event: Callable[[dict], object], side: str = "left",
+                 on_emergency=None, emergency_escape_seconds=1.5,
+                 lock_sync=True, peer_align=0.5, peer_span=0.6, peers=None):
+        if side not in {"left", "right", "top", "bottom"}:
+            raise ValueError("side must be left, right, top, or bottom")
+        self.on_event = on_event
+        self.side = side
+        self.on_emergency = on_emergency or (lambda reason: None)
+        self.safety = EmergencyMonitor(emergency_escape_seconds)
+        self.lock_sync = bool(lock_sync)
+        self.locked = False
+        self.peer_align = float(peer_align)
+        self.peer_span = float(peer_span)
+        self.peers = dict(peers) if peers else None
+        self._peer_rect: tuple | None = None
+        self._monitors: list | None = None
+        self._hit: tuple | None = None
+        self._entry_x = 0.5
+        self._entry_y = 0.5
+        self._emergency_requested = False
+        self.peer_connected = False
+        self.active = False
+        self.error: str | None = None
+        self._keys: set[int] = set()
+        self._buttons: set[str] = set()
+        self._vpos = [0.0, 0.0]
+        self._move_dir = [0, 0]
+        self._press_side: str | None = None
+        self._press_count = 0
+        self._rearm: dict[str, float] = {}
+        self._abs_last: dict[int, dict[int, int]] = {}
+        self._devices: list[EvdevDevice] = []
+        self._keyboards: list[EvdevDevice] = []
+        self._pointers: list[EvdevDevice] = []
+        self._poller: select.poll | None = None
+        self._fd_map: dict[int, EvdevDevice] = {}
+        self._thread: threading.Thread | None = None
+        self._ready = threading.Event()
+        self._stopping = threading.Event()
+
+    def start(self):
+        if sys.platform != "linux":
+            raise OSError("LinuxCapture requires Linux")
+        if self._thread and self._thread.is_alive():
+            return
+        self.error = None
+        self._ready.clear()
+        self._stopping.clear()
+        self._emergency_requested = False
+        self.safety.reset()
+        self._rearm.clear()
+        self._press_side, self._press_count = None, 0
+        self._thread = threading.Thread(target=self._run, name="kvm-evdev", daemon=True)
+        self._thread.start()
+        if not self._ready.wait(5):
+            self.stop()
+            raise RuntimeError("evdev capture startup timed out")
+        if self.error:
+            raise RuntimeError(self.error)
+
+    def stop(self):
+        self._stopping.set()
+        self.release()
+        if self._thread and self._thread is not threading.current_thread():
+            self._thread.join(3)
+
+    def _emit(self, event):
+        try:
+            if self.on_event(event) is False:
+                self.release()
+                return False
+            return True
+        except Exception as exc:
+            self.error = str(exc)
+            self.release()
+            return False
+
+    def release(self, normalized_y=None, normalized_x=None):
+        """Fail-safe local control: ungrab devices and resume local input."""
+        if normalized_y is not None:
+            self._entry_y = min(1.0, max(0.0, float(normalized_y)))
+        if normalized_x is not None:
+            self._entry_x = min(1.0, max(0.0, float(normalized_x)))
+        was_active = self.active
+        self.active = False
+        self.safety.reset()
+        self._press_side, self._press_count = None, 0
+        for device in self._devices:
+            device.ungrab()
+        if was_active:
+            self._arm_deadband()
+            x, y = self._return_point()
+            self._vpos = [float(x), float(y)]
+            try:
+                self.on_event({"type": "deactivate"})
+            except Exception as exc:
+                self.error = str(exc)
+
+    return_local = release
+
+    def _emergency_stop(self, reason):
+        if self._emergency_requested:
+            return
+        self._emergency_requested = True
+        self._stopping.set()
+        self.release()
+        threading.Thread(target=self.on_emergency, args=(reason,), daemon=True,
+                         name="kvm-emergency-stop").start()
+
+    def _peer_map(self, mons):
+        if self.peers:
+            return {name: geometry.snap_to_edge(tuple(rect), mons)
+                    for name, rect in self.peers.items()}
+        return {"peer": geometry.default_peer(mons, self.side,
+                                              self.peer_align, self.peer_span)}
+
+    def _return_point(self):
+        mons = self._monitors or [(0, 0, 1920, 1080)]
+        peers = self._peer_map(mons)
+        peer = self._peer_rect
+        if peer is None or peer not in peers.values():
+            peer = next(iter(peers.values()))
+        return geometry.return_point(mons, peer, self._entry_x, self._entry_y)
+
+    def _run(self):
+        try:
+            self._monitors = linux_monitors()
+            bounds = geometry.union_bounds(self._monitors)
+            self._vpos = [bounds[0] + bounds[2] / 2, bounds[1] + bounds[3] / 2]
+            self._devices = input_devices()
+            self._keyboards = [d for d in self._devices if d.is_keyboard]
+            self._pointers = [d for d in self._devices if d.is_pointer]
+            if not self._keyboards and not self._pointers:
+                self.error = ("No readable input devices — join the 'input' "
+                              "group (sudo usermod -aG input $USER), then re-login")
+                self._ready.set()
+                return
+            self._fd_map = {d.fd: d for d in self._keyboards + self._pointers}
+            self._poller = selector(list(self._fd_map))
+            self._ready.set()
+            while not self._stopping.is_set():
+                for fd, _mask in self._poller.poll(200):
+                    device = self._fd_map.get(fd)
+                    if device is None:
+                        continue
+                    try:
+                        for event in device.events():
+                            self._handle(device, *event)
+                    except OSError:
+                        self._fd_map.pop(fd, None)
+                        try:
+                            self._poller.unregister(fd)
+                        except KeyError:
+                            pass
+                        if device in self._pointers:
+                            self._pointers.remove(device)
+                        if device in self._keyboards:
+                            self._keyboards.remove(device)
+                        device.close()
+        except Exception as exc:
+            self.error = str(exc)
+            self._ready.set()
+        finally:
+            for device in self._devices:
+                device.close()
+
+    def _handle(self, device: EvdevDevice, ev_type: int, code: int, value: int):
+        if self.locked:
+            return
+        if ev_type == EV_KEY:
+            if code in _BUTTON_NAMES:
+                self._button(code, value)
+            elif value != 2:  # Kernel autorepeat (value 2) is not a new key event.
+                self._key(code, bool(value))
+        elif ev_type == EV_REL:
+            self._rel(code, value)
+        elif (ev_type == EV_ABS and device.is_pointer
+              and not ({REL_X, REL_Y} & device.rels)):
+            # Hybrids emitting REL+ABS for one motion would double-feed the
+            # virtual cursor — REL wins; ABS only serves REL-less devices.
+            self._abs(device, code, value)
+
+    def _key(self, code: int, down: bool):
+        key_id = evdev_key_id(code)
+        if key_id is None:
+            return
+        vk, scan, extended = key_id
+        self._keys.add(vk) if down else self._keys.discard(vk)
+        if self.active:
+            reason = self.safety.key(vk, down)
+            if reason:
+                self._emergency_stop(reason)
+                return
+        ctrl = bool(self._keys & {0x11, 0xA2, 0xA3})
+        alt = bool(self._keys & {0x12, 0xA4, 0xA5})
+        if vk == 0x7B and down and ctrl and alt:
+            self.release()
+            return
+        if self.active:
+            self._emit({"type": "key", "vk": vk, "scan": scan,
+                        "down": down, "extended": extended})
+
+    def _button(self, code: int, value: int):
+        if value == 2:  # Ignore autorepeat on button codes too.
+            return
+        button = _BUTTON_NAMES[code]
+        down = bool(value)
+        self._buttons.add(button) if down else self._buttons.discard(button)
+        if self.active:
+            self._emit({"type": "button", "button": button, "down": down})
+
+    def _rel(self, code: int, value: int):
+        if self.active:
+            if code == REL_X:
+                self._emit({"type": "move", "dx": value, "dy": 0})
+            elif code == REL_Y:
+                self._emit({"type": "move", "dx": 0, "dy": value})
+            elif code == REL_WHEEL:
+                self._emit({"type": "scroll", "dx": 0, "dy": value * 120})
+            elif code == REL_HWHEEL:
+                self._emit({"type": "scroll", "dx": value * 120, "dy": 0})
+            elif code == REL_WHEEL_HI_RES:
+                self._emit({"type": "scroll", "dx": 0, "dy": value})
+            elif code == REL_HWHEEL_HI_RES:
+                self._emit({"type": "scroll", "dx": value, "dy": 0})
+            return
+        if code in (REL_X, REL_Y):
+            self._vpos[code] += value
+            if value:
+                self._move_dir[code] = 1 if value > 0 else -1
+            self._move_inactive()
+
+    def _abs(self, device: EvdevDevice, code: int, value: int):
+        if code not in (ABS_X, ABS_Y):
+            return
+        last = self._abs_last.setdefault(device.fd, {})
+        previous = last.get(code, value)
+        last[code] = value
+        delta = value - previous
+        if self.active:
+            if delta:
+                event = {"type": "move", "dx": 0, "dy": 0}
+                event["dx" if code == ABS_X else "dy"] = delta
+                self._emit(event)
+        else:
+            self._vpos[code] += delta
+            if delta:
+                self._move_dir[code] = 1 if delta > 0 else -1
+            self._move_inactive()
+
+    def _arm_deadband(self):
+        """Suppress the edge just exited until the cursor backs well away —
+        release() lands a couple of px from it, and tiny drift would
+        otherwise bounce straight back into a grab."""
+        if not self._hit:
+            return
+        side = self._hit[1]
+        bx, by, bw, bh = geometry.union_bounds(self._monitors or [(0, 0, 1920, 1080)])
+        target = {"left": bx + REARM_DISTANCE, "right": bx + bw - 1 - REARM_DISTANCE,
+                  "top": by + REARM_DISTANCE, "bottom": by + bh - 1 - REARM_DISTANCE}[side]
+        self._rearm[side] = target
+
+    def _rearm_tick(self, x: float, y: float):
+        for side, target in list(self._rearm.items()):
+            coord = x if side in ("left", "right") else y
+            if (side in ("left", "top") and coord > target
+                    or side in ("right", "bottom") and coord < target):
+                del self._rearm[side]
+
+    def _move_inactive(self):
+        if (self._stopping.is_set() or not self.peer_connected
+                or self._keys or self._buttons or self.active):
+            self._press_side, self._press_count = None, 0
+            return
+        mons = self._monitors or [(0, 0, 1920, 1080)]
+        bounds = geometry.union_bounds(mons)
+        x, y = geometry.clamp(bounds, self._vpos[0], self._vpos[1])
+        self._vpos = [float(x), float(y)]
+        self._rearm_tick(x, y)
+        hit = geometry.hit(mons, self._peer_map(mons), x, y)
+        if hit is None:
+            self._press_side, self._press_count = None, 0
+            return
+        name, side, nx, ny = hit
+        # A real crossing keeps pushing toward the boundary — parked or
+        # edge-sliding cursors must not fire it.
+        toward = {"left": self._move_dir[0] < 0, "right": self._move_dir[0] > 0,
+                  "top": self._move_dir[1] < 0, "bottom": self._move_dir[1] > 0}[side]
+        if not toward or side in self._rearm:
+            self._press_side, self._press_count = None, 0
+            return
+        if side == self._press_side:
+            self._press_count += 1
+        else:
+            self._press_side, self._press_count = side, 1
+        if self._press_count < PRESS_EVENTS:
+            return
+        self._press_side, self._press_count = None, 0
+        self._hit = hit
+        self._peer_rect = self._peer_map(mons)[name]
+        self._entry_x, self._entry_y = nx, ny
+        self.active = True
+        # Only devices we actually read: grabbing e.g. a power-button node
+        # would eat its presses for the whole shared session.
+        for device in self._keyboards + self._pointers:
+            try:
+                device.grab()
+            except OSError:
+                continue
+        self._emit({"type": "activate", "normalized_y": ny,
+                    "normalized_x": nx, "side": side, "peer": name})
