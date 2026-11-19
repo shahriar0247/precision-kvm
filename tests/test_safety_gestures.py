@@ -17,6 +17,35 @@ def test_escape_hold_does_not_depend_on_keyboard_repeat():
     assert monitor.tick(15) is None
 
 
+def test_rapid_escape_taps_trigger_emergency_stop():
+    monitor = EmergencyMonitor()
+    for i in range(4):
+        assert monitor.key(0x1B, True, 10 + i * 0.3) is None
+        monitor.key(0x1B, False, 10 + i * 0.3 + 0.1)
+    # Fifth tap inside the window trips it — mid-press, before any release.
+    assert monitor.key(0x1B, True, 11.2) == "Escape-taps emergency stop"
+
+
+def test_slow_escape_taps_do_not_accumulate():
+    monitor = EmergencyMonitor()
+    for i in range(5):
+        assert monitor.key(0x1B, True, 10 + i * 0.6) is None
+        monitor.key(0x1B, False, 10 + i * 0.6 + 0.1)
+    assert not monitor.triggered
+
+
+def test_non_escape_taps_never_trigger():
+    monitor = EmergencyMonitor()
+    for i in range(6):
+        monitor.key(0x08, True, 10 + i * 0.2)   # Backspace
+        monitor.key(0x08, False, 10 + i * 0.2 + 0.05)
+    monitor.reset()
+    for i in range(5):
+        monitor.key(0x1B, True, 20 + i * 0.3)
+        monitor.key(0x1B, False, 20 + i * 0.3 + 0.05)
+    assert monitor.triggered  # taps cleared by reset still count
+
+
 def test_short_escape_and_repeats_preserve_original_hold_time():
     monitor = EmergencyMonitor()
     monitor.key(0x1B, True, 10)
@@ -46,8 +75,11 @@ def test_emergency_stop_is_latched_disarmed_and_returns_local_before_callback():
         capture._emergency_stop("test stop")
         assert completed.wait(1)
         capture._emergency_stop("duplicate")
-    assert calls == [("test stop", False, True)]
+    # The capture must outlive the panic: links are dropped, not the host.
+    assert calls == [("test stop", False, False)]
     assert capture._emergency_requested
+    capture.reset_emergency()
+    assert not capture._emergency_requested
 
 
 @pytest.mark.parametrize("kwargs", [

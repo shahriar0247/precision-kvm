@@ -35,14 +35,15 @@ def test_host_stop_releases_input_before_clipboard_wait():
     assert order[:2] == ["input", "clipboard"]
 
 
-def test_emergency_stops_server_instead_of_only_returning_pointer():
+def test_emergency_drops_links_but_host_survives_for_reconnect():
     messages = []
     session = HostSession(load_settings(), messages.append)
     session._disconnect = Mock()
     session.listener = Mock()
     session.emergency_stop("Escape held")
-    assert session.stopped.is_set()
-    session.listener.close.assert_called_once()
+    assert not session.stopped.is_set()          # host survives the panic
+    session.listener.close.assert_not_called()   # listener stays up
+    session._disconnect.assert_called_once()     # links drop -> clients reconnect
     assert "Emergency STOP" in messages[-1]
 
 

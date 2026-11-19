@@ -10,6 +10,7 @@ import ctypes
 from ctypes import wintypes
 import math
 import sys
+import time
 from typing import Any, Callable
 
 from . import geometry
@@ -43,6 +44,8 @@ MOUSEEVENTF_MOVE = 0x0001
 SPI_GETMOUSE = 0x0003
 SPI_SETMOUSE = 0x0004
 
+RETURN_PUSH = 200  # deltas pushed into the return edge before control returns
+
 
 class WindowsInjector:
     """Receives input events on Windows and posts them as local input."""
@@ -64,6 +67,8 @@ class WindowsInjector:
         self.buttons: set[int] = set()
         self.held_vks: set[int] = set()
         self.x = self.y = 0.0
+        self._press = 0.0            # accumulated push on the return edge
+        self._press_t = 0.0
         self.left = self.top = self.width = self.height = 0
         self.refresh_bounds()
 
@@ -144,11 +149,21 @@ class WindowsInjector:
         if not math.isfinite(dx) or not math.isfinite(dy):
             raise ValueError("Non-finite mouse movement")
         nx, ny = self.x + dx, self.y + dy
-        crossing = ((self.side == "left" and nx >= self.left + self.width - 1 and dx > 0)
-                    or (self.side == "right" and nx <= self.left and dx < 0)
-                    or (self.side == "top" and ny >= self.top + self.height - 1 and dy > 0)
-                    or (self.side == "bottom" and ny <= self.top and dy < 0))
-        if crossing and not self.buttons:
+        # Returning takes real travel past the return edge — entry parks the
+        # cursor on it, so a lone jitter must not bounce back.
+        if self.side == "left":      overshoot = nx - (self.left + self.width - 1)
+        elif self.side == "right":   overshoot = self.left - nx
+        elif self.side == "top":     overshoot = ny - (self.top + self.height - 1)
+        else:                        overshoot = self.top - ny
+        now = time.monotonic()
+        if overshoot > 0 and not self.buttons:
+            self._press = (self._press + overshoot
+                           if now - self._press_t <= 0.4 else overshoot)
+        else:
+            self._press = 0.0
+        self._press_t = now
+        if self._press >= RETURN_PUSH:
+            self._press = 0.0
             fraction = ((self.y - self.top) / max(1, self.height - 1)
                         if self.side in ("left", "right")
                         else (self.x - self.left) / max(1, self.width - 1))
@@ -207,6 +222,7 @@ class WindowsInjector:
 
     def release_all(self):
         self.active = False
+        self._press = 0.0
         if self._mouse_params is not None:
             params = (ctypes.c_int * 3)(*self._mouse_params)
             user.SystemParametersInfoW(SPI_SETMOUSE, 0, ctypes.byref(params), 0)

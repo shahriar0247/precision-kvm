@@ -3,6 +3,8 @@ from unittest.mock import Mock, patch
 import socket
 import ssl
 import sys
+import threading
+import time
 
 import pytest
 
@@ -24,6 +26,41 @@ def test_activation_carries_settings_and_return_preserves_position():
     assert link.name == "mac"
     session._control(link, {"type": "return", "normalized_y": 0.7, "normalized_x": 0.4})
     session.capture.return_local.assert_called_once_with(0.7, 0.4)
+
+
+def test_watchdog_drops_silent_active_link():
+    session = HostSession(load_settings(), lambda value: None)
+    link = session_module._PeerLink(Mock())
+    session.links = [link]
+    session.active_link = link
+    link.last_rx = time.monotonic() - 10  # silent while owning the grab
+    watchdog = threading.Thread(target=session._watchdog, args=(link,),
+                                daemon=True)
+    watchdog.start()
+    watchdog.join(4)
+    assert not watchdog.is_alive()
+    link.channel.close.assert_called_once()
+
+
+def test_watchdog_leaves_quiet_but_inactive_links_alone():
+    session = HostSession(load_settings(), lambda value: None)
+    link = session_module._PeerLink(Mock())
+    session.links = [link]          # connected, but not holding input
+    link.last_rx = time.monotonic() - 10
+    watchdog = threading.Thread(target=session._watchdog, args=(link,),
+                                daemon=True)
+    watchdog.start()
+    time.sleep(1.4)                 # one full silence check passes harmlessly
+    session.stopped.set()
+    watchdog.join(3)
+    link.channel.close.assert_not_called()
+
+
+def test_link_addr_strips_ipv4_mapped_ipv6():
+    channel = Mock()
+    channel.sock.getpeername.return_value = ("::ffff:192.168.50.2", 55192)
+    link = session_module._PeerLink(channel)
+    assert link.addr == "192.168.50.2"
 
 
 def test_multi_peer_routing_targets_named_link():
@@ -130,6 +167,7 @@ def test_bad_tls_handshake_keeps_host_running_without_sharing():
 
     listener.accept.side_effect = accept
     capture_path = ("precision_kvm.mac_capture.MacCapture" if sys.platform == "darwin"
+                    else "precision_kvm.linux_capture.LinuxCapture" if sys.platform == "linux"
                     else "precision_kvm.windows.WindowsCapture")
     with patch("precision_kvm.session.identity", return_value=("cert", "key", "t" * 32, "pin")), \
          patch("precision_kvm.session.TLSListener", return_value=listener), \

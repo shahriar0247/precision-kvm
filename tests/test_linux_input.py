@@ -263,6 +263,31 @@ def test_portal_barriers_map_peer_edges():
     assert not specs and not ids
 
 
+def test_injector_return_requires_sustained_edge_push(monkeypatch):
+    from precision_kvm import linux_inject as inject_module
+
+    monkeypatch.setattr(inject_module, "linux_monitors",
+                        lambda: [(0, 0, 1920, 1200)])
+    returns = []
+
+    class FakeDevice:
+        def rel(self, *args): pass
+        def key(self, *args): pass
+        def syn(self): pass
+        def emit(self, *args): pass
+
+    injector = LinuxInjector(on_return=returns.append, device=FakeDevice())
+    injector.handle({"type": "activate", "side": "left", "normalized_y": 0.5})
+    assert injector.active
+    # Entry parks the cursor at the return edge — jitter must not bounce.
+    for _ in range(10):
+        injector.handle({"type": "move", "dx": 2, "dy": 0})
+    assert not returns
+    for _ in range(10):
+        injector.handle({"type": "move", "dx": 30, "dy": 0})
+    assert returns and returns[0]["type"] == "return"
+
+
 def test_capture_suppresses_edge_cross_while_keys_held(monkeypatch):
     capture, events = _capture(monkeypatch)
     capture.peer_connected = True

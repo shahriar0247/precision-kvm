@@ -59,7 +59,11 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(self.injector.x,98)
         self.injector.handle({"type":"move","dx":-50,"dy":0})
         self.assertEqual(self.injector.x,48)
+        # A small poke past the edge must not bounce back — only travel does.
         self.injector.handle({"type":"move","dx":60,"dy":0})
+        self.assertTrue(self.injector.active)
+        self.injector.handle({"type":"move","dx":-99,"dy":0})
+        self.injector.handle({"type":"move","dx":300,"dy":0})
         self.assertFalse(self.injector.active)
         self.assertEqual(self.returns,[{"type":"return","normalized_y":0.5}])
 
@@ -112,6 +116,8 @@ class MappingTests(unittest.TestCase):
         self.injector.handle({"type":"activate","side":"top","normalized_x":0.25})
         self.assertEqual((self.injector.x,self.injector.y),(24.75,98))
         self.injector.handle({"type":"move","dx":0,"dy":3})
+        self.assertEqual(self.returns,[])  # a poke past the edge is not a return
+        self.injector.handle({"type":"move","dx":0,"dy":300})
         self.assertEqual(self.returns,[{"type":"return","normalized_y":0.25,"normalized_x":0.25}])
 
     def test_gain_fractional_motion_scroll_and_modifier_swap(self):

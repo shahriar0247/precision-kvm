@@ -106,6 +106,7 @@ class LinuxCapture:
         self._grace_until = 0.0
         self._portal = None          # bridge subprocess while armed
         self._portal_ids: dict = {}
+        self._portal_aid: int | None = None
         self._abs_last: dict[int, dict[int, int]] = {}
         self._devices: list[EvdevDevice] = []
         self._keyboards: list[EvdevDevice] = []
@@ -168,6 +169,13 @@ class LinuxCapture:
         self._press_side, self._press_amt = None, 0.0
         for device in self._devices:
             device.ungrab()
+        aid, self._portal_aid = self._portal_aid, None
+        if aid is not None:
+            if was_active:
+                x, y = self._return_point()
+                self._portal_release(aid, x, y)  # compositor warps the cursor
+            else:
+                self._portal_release(aid)
         if was_active:
             self._grace_until = time.monotonic() + RETURN_GRACE_S
             x, y = self._return_point()
@@ -183,10 +191,14 @@ class LinuxCapture:
         if self._emergency_requested:
             return
         self._emergency_requested = True
-        self._stopping.set()
         self.release()
         threading.Thread(target=self.on_emergency, args=(reason,), daemon=True,
                          name="kvm-emergency-stop").start()
+
+    def reset_emergency(self):
+        """Re-arm the panic gesture after the session handled one."""
+        self._emergency_requested = False
+        self.safety.reset()
 
     def _peer_map(self, mons):
         if self.peers:
@@ -407,8 +419,8 @@ class LinuxCapture:
             proc = subprocess.Popen(
                 [py, str(_BRIDGE),
                  json.dumps({"capabilities": 15, "barriers": specs})],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                text=True, bufsize=1)
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, text=True, bufsize=1)
         except OSError:
             return None
         ready = select.select([proc.stdout], [], [], 8)[0]
@@ -422,29 +434,55 @@ class LinuxCapture:
     def _portal_reader(self, proc):
         for line in proc.stdout:
             parts = line.split()
-            if len(parts) >= 4 and parts[0] == "EDGE":
+            if len(parts) >= 5 and parts[0] == "EDGE":
                 name, side = self._portal_ids.get(int(parts[1]), (None, None))
+                try:
+                    aid = int(parts[2])
+                except ValueError:
+                    continue
                 if name:
                     try:
-                        self._portal_edge(name, side,
-                                          float(parts[2]), float(parts[3]))
+                        self._portal_edge(name, side, aid,
+                                          float(parts[3]), float(parts[4]))
                     except Exception:
                         pass
+                else:
+                    self._portal_release(aid)  # unknown barrier — free it
+            elif len(parts) >= 2 and parts[0] == "EDGE_END":
+                try:
+                    if self._portal_aid == int(parts[1]):
+                        self._portal_aid = None
+                except ValueError:
+                    pass
             elif parts and parts[0] in ("CLOSED", "ERROR"):
                 break
         self._portal = None  # bridge died — evdev pressure model resumes
 
-    def _portal_edge(self, name, side, x, y):
+    def _portal_release(self, aid, x=None, y=None):
+        proc = self._portal
+        if proc is None or proc.stdin is None:
+            return
+        try:
+            coords = f" {x:.0f} {y:.0f}" if x is not None else ""
+            proc.stdin.write(f"RELEASE {aid}{coords}\n")
+            proc.stdin.flush()
+        except (OSError, ValueError):
+            pass
+
+    def _portal_edge(self, name, side, aid, x, y):
         """A real edge crossing reported by the compositor."""
         if (self._stopping.is_set() or not self.peer_connected
                 or self._keys or self._buttons or self.active
                 or time.monotonic() < self._grace_until):
+            self._portal_release(aid)
             return
         mons = self._monitors or [(0, 0, 1920, 1080)]
         peer = self._peer_map(mons).get(name)
         if peer is None:
+            self._portal_release(aid)
             return
         cx, cy = geometry.clamp(peer, x, y)
         nx = (cx - peer[0]) / max(1, peer[2] - 1)
         ny = (cy - peer[1]) / max(1, peer[3] - 1)
+        self._portal_aid = aid
         self._cross((name, side, nx, ny), mons)

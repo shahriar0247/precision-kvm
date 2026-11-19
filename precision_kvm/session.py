@@ -19,13 +19,15 @@ from .transport import (BackpressureError, EventBuffer, FramedSocket, PlainListe
 
 if TYPE_CHECKING:
     from .discovery import Advertiser
+    from .linux_capture import LinuxCapture
     from .screenshare import ScreenShareServer
     from .windows import WindowsCapture
 
 
 class _PeerLink:
     """One live client connection, bound to a named layout peer."""
-    __slots__ = ("channel", "sender", "buffer", "name", "worker")
+    __slots__ = ("channel", "sender", "buffer", "name", "worker", "addr",
+                 "last_rx")
 
     def __init__(self, channel, name=""):
         self.channel = channel
@@ -33,13 +35,20 @@ class _PeerLink:
         self.sender: Sender | None = None
         self.buffer: EventBuffer | None = None
         self.worker: threading.Thread | None = None
+        self.last_rx = time.monotonic()
+        try:
+            addr = channel.sock.getpeername()[0]
+            # IPv4-mapped IPv6 peers must match peers configured by IPv4.
+            self.addr = addr[7:] if addr.startswith("::ffff:") else addr
+        except (OSError, AttributeError, TypeError):
+            self.addr = ""
 
 
 class HostSession:
     def __init__(self, settings: dict, status: Callable[[str], None] = print):
         self.settings, self.status = settings, status
         self.stopped = threading.Event()
-        self.capture: WindowsCapture | None = None
+        self.capture: WindowsCapture | LinuxCapture | None = None
         self.links: list[_PeerLink] = []
         self.active_link: _PeerLink | None = None
         self._links_lock = threading.Lock()
@@ -96,10 +105,16 @@ class HostSession:
                 process.wait(timeout=3)
 
     def emergency_stop(self, reason):
-        """The native hook already released local input; fully stop the host."""
+        """Release local input and drop every client link; the listener stays
+        up so clients reconnect into a clean, ungrabbed host."""
         self.emergency_reason = str(reason)
-        self.stop()
-        self.status(f"Emergency STOP: {reason} • start the host to resume")
+        self.active_link = None
+        self._disconnect()
+        if self.capture:
+            self.capture.peer_connected = False
+            self.capture.release()
+            self.capture.reset_emergency()
+        self.status(f"Emergency STOP: {reason} • input released; clients reconnecting")
 
     def connect_mac(self):
         """Launch the prepared client through key-authenticated SSH, explicitly from UI."""
@@ -144,7 +159,10 @@ class HostSession:
         """Route to the named peer's link; an unnamed link claims the peer."""
         with self._links_lock:
             for link in self.links:
-                if link.name == peer_name:
+                # Clients hello with their hostname, which rarely equals the
+                # layout key — a peer configured by address must match the
+                # link's remote address, or crossings are silently dropped.
+                if link.name == peer_name or (peer_name and link.addr == peer_name):
                     return link
             for link in self.links:
                 if not link.name:
@@ -193,8 +211,12 @@ class HostSession:
     def _run(self):
         if sys.platform == "darwin":
             from .mac_capture import MacCapture as Capture
-        else:
+        elif sys.platform == "linux":
+            from .linux_capture import LinuxCapture as Capture
+        elif sys.platform == "win32":
             from .windows import WindowsCapture as Capture
+        else:
+            raise OSError(f"Host capture is not supported on {sys.platform}")
         try:
             cert, key, token, fingerprint = identity()
             tls = bool(self.settings.get("tls", True))
@@ -240,6 +262,9 @@ class HostSession:
                     native_touchpad=self.settings.get("native_touchpad", False),
                     emergency_escape_seconds=self.settings.get("emergency_escape_seconds", 1.5),
                     mac_mode=self.settings.get("mac_mode", False))
+            elif sys.platform == "linux":
+                capture_kwargs.update(
+                    emergency_escape_seconds=self.settings.get("emergency_escape_seconds", 1.5))
             self.capture = Capture(self._emit, **capture_kwargs)
             self.capture.start()
             self.ready.set()
@@ -306,6 +331,9 @@ class HostSession:
                                   name="kvm-peer-writer")
         writer.start()
         self._workers.append(writer)
+        watchdog = threading.Thread(target=self._watchdog, args=(link,),
+                                    daemon=True, name="kvm-peer-watchdog")
+        watchdog.start()
         self.status(f"Connected • {link.name or 'client'} — cross the configured edge to share")
         try:
             Receiver(link.channel, lambda event: self._control(link, event),
@@ -340,7 +368,26 @@ class HostSession:
             if self.capture:
                 self.capture.return_local()
 
+    def _watchdog(self, link: _PeerLink):
+        """A dead TCP peer can hang without FIN/RST — while it owns the input
+        grab that leaves the host stuck. Clients ping ~4x/s, so silence on the
+        active link means the peer is gone: close it to release input."""
+        while not self.stopped.wait(1.0):
+            with self._links_lock:
+                if link not in self.links:
+                    return
+            if (self.active_link is link
+                    and time.monotonic() - link.last_rx > 5.0):
+                self.status(f"Active client '{link.name or 'client'}' silent — "
+                            "dropping to release input")
+                try:
+                    link.channel.close()
+                except OSError:
+                    pass
+                return
+
     def _control(self, link: _PeerLink, event):
+        link.last_rx = time.monotonic()
         kind = event.get("type")
         if kind == "return" and self.capture:
             self.capture.return_local(event.get("normalized_y"), event.get("normalized_x"))
@@ -432,8 +479,12 @@ def run_client(config: dict, connect_timeout=3, stop_event=None, status=print,
         if not Injector.accessibility_available(prompt=True):
             raise RuntimeError("Grant Accessibility access to this Python executable/Terminal in "
                                "System Settings > Privacy & Security > Accessibility, then reconnect")
-    else:
+    elif sys.platform == "linux":
+        from .linux_inject import LinuxInjector as Injector
+    elif sys.platform == "win32":
         from .windows_inject import WindowsInjector as Injector
+    else:
+        raise RuntimeError(f"Input injection is not supported on {sys.platform}")
     stopped = threading.Event()
     buffer = EventBuffer(120)
     injector = Injector(on_return=buffer.put)

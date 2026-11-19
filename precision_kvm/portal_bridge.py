@@ -7,9 +7,16 @@ the true position, so crossings are exact and never phantom.
 
 Protocol: argv[1] is a JSON config — {"capabilities": u, "barriers":
 [{"id": u, "peer": str, "side": str, "rect": [x1,y1,x2,y2]}]}.
-stdout: READY / EDGE <id> <x> <y> / EDGE_END <id> / DISABLED / ERROR <msg>.
-Each Activated is released immediately so barriers re-arm; EDGE_END follows a
-spontaneous Deactivated. stderr is unused (inherited by the caller's logs).
+stdout: READY / EDGE <barrier_id> <activation_id> <x> <y> / EDGE_END <id> /
+DISABLED / ERROR <msg> / CLOSED.
+stdin: "RELEASE <activation_id> [<x> <y>]" — releases that capture, optionally
+placing the cursor (used to land the pointer at the re-entry point).
+
+An Activated barrier stays captured until RELEASEd or the peer Deactivates:
+while held, the compositor routes input to the portal, not local apps — the
+evdev grab forwards it remotely, so the local cursor visibly parks at the
+edge. On return, RELEASE with coordinates makes the compositor warp the real
+cursor — the re-entry position is exact.
 """
 from __future__ import annotations
 
@@ -41,12 +48,22 @@ def main() -> int:
     bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
     loop = GLib.MainLoop()
     state = {"session": None, "started": False, "zone_set": 0,
-             "zone_ready": threading.Event()}
+             "zone_ready": threading.Event(), "activations": set()}
 
     def call(method, params, ptype, timeout=15000):
         res = bus.call_sync(BUS, PATH, IFACE, method, v(ptype, params), None,
                             Gio.DBusCallFlags.NONE, timeout, None)
         return res.unpack()[0] if res else None
+
+    def release(activation_id, x=None, y=None):
+        opts = {"activation_id": v("u", activation_id)}
+        if x is not None and y is not None:
+            opts["cursor_position"] = v("(dd)", (float(x), float(y)))
+        try:
+            call("Release", (state["session"], opts), "(oa{sv})")
+        except Exception:
+            pass
+        state["activations"].discard(activation_id)
 
     def set_barriers():
         barriers = [{"barrier_id": v("u", b["id"]),
@@ -87,12 +104,14 @@ def main() -> int:
             aid = opts.get("activation_id", 0)
             bid = opts.get("barrier_id", 0)
             x, y = opts.get("cursor_position", (0.0, 0.0))
-            call("Release", (state["session"],
-                             {"activation_id": v("u", aid)}), "(oa{sv})")
+            state["activations"].add(aid)
             if bid:
-                out("EDGE", bid, f"{x:.1f}", f"{y:.1f}")
+                out("EDGE", bid, aid, f"{x:.1f}", f"{y:.1f}")
+            else:
+                release(aid)  # unknown barrier — don't hold it hostage
         elif sig == "Deactivated":
             aid = opts.get("activation_id", 0)
+            state["activations"].discard(aid)
             out("EDGE_END", aid)
         elif sig == "Disabled":
             out("DISABLED")
@@ -106,6 +125,19 @@ def main() -> int:
     bus.signal_subscribe(BUS, SES_IFACE, "Closed", None, None, 0,
                          lambda *a: loop.quit())
 
+    def stdin_commands():
+        for line in sys.stdin:
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] == "RELEASE":
+                try:
+                    aid = int(parts[1])
+                    x = float(parts[2]) if len(parts) > 2 else None
+                    y = float(parts[3]) if len(parts) > 3 else None
+                except ValueError:
+                    continue
+                GLib.idle_add(release, aid, x, y)
+        loop.quit()
+
     try:
         opts = {"session_handle_token": v("s", "pkvmcapture"),
                 "handle_token": v("s", "pkvmhand"),
@@ -116,7 +148,11 @@ def main() -> int:
     except Exception as exc:
         out("ERROR", str(exc))
         return 1
+    threading.Thread(target=stdin_commands, daemon=True,
+                     name="portal-stdin").start()
     loop.run()
+    for aid in list(state["activations"]):
+        release(aid)
     out("CLOSED")
     return 0
 

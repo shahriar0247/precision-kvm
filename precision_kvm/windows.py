@@ -33,6 +33,16 @@ MAC_CHORDS = {
 }
 MAC_CHORDS_SHIFT = {0x33, 0x34}  # Cmd+Shift+3/4 → Win+Shift+S screenshot
 
+# Command chords whose Windows equivalent is the same Ctrl combo.
+# Alt+key outside this set stays a real Alt chord so native accelerators
+# (Alt+G, ribbon keys, Alt+drag, Office Alt+letters) keep working.
+MAC_CTRL_KEYS = {
+    0x41, 0x43, 0x45, 0x46, 0x4C, 0x4E, 0x4F, 0x50,
+    0x52, 0x53, 0x54, 0x56, 0x57, 0x58, 0x5A,
+    *range(0x30, 0x3A),
+    0xBB, 0xBC, 0xBD,  # = , - (zoom, preferences)
+}
+
 
 class WindowsCapture:
     """Share Windows input when crossing the configured primary-screen edge.
@@ -141,12 +151,16 @@ class WindowsCapture:
         if self._emergency_requested:
             return
         self._emergency_requested = True
-        self._stopping.set()
         self.release()
-        # Parent stops the listener/session. Never block the hook message pump
-        # on a network shutdown, GUI operation or join from within a callback.
+        # Parent drops client links; the listener survives so peers reconnect.
+        # Never block the hook message pump on networking or joins.
         threading.Thread(target=self.on_emergency, args=(reason,), daemon=True,
                          name="kvm-emergency-stop").start()
+
+    def reset_emergency(self):
+        """Re-arm the panic gesture after the session handled one."""
+        self._emergency_requested = False
+        self.safety.reset()
 
     def _peer_map(self, mons):
         if self.peers:
@@ -375,9 +389,18 @@ class WindowsCapture:
                                     for kv, kdown in seq:
                                         user.keybd_event(kv, 0, 0 if kdown else 2, 0)
                                 return 1
-                            if down and not self._mac_ctrl:
-                                user.keybd_event(0x11, 0, 0, 0)
-                                self._mac_ctrl = True
+                            if vk in MAC_CTRL_KEYS:
+                                if down and not self._mac_ctrl:
+                                    user.keybd_event(0x11, 0, 0, 0)
+                                    self._mac_ctrl = True
+                            elif down:
+                                # Not a Command chord: restore the real Alt so the
+                                # app receives its native accelerator (Alt+G, ...).
+                                if self._mac_ctrl:
+                                    user.keybd_event(0x11, 0, 2, 0)
+                                    self._mac_ctrl = False
+                                user.keybd_event(0x12, 0, 0, 0)
+                                self._mac_alt_injected = True
                         return next_hook(code, message, pointer)
             except Exception as exc:
                 self.error = str(exc)

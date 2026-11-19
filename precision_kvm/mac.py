@@ -19,6 +19,9 @@ if TYPE_CHECKING:
 from .keymap import KeyMapper, effective_vk, mac_keycode as mac_keycode
 
 
+RETURN_PUSH = 200  # deltas pushed into the return edge before control returns
+
+
 class MacInjector:
     """One-thread-owned injector with explicit release on every disconnect.
 
@@ -62,6 +65,8 @@ class MacInjector:
         self.media: set[int] = set()
         self.buttons: set[int] = set()
         self.scroll_x = self.scroll_y = 0.0
+        self._press = 0.0            # accumulated push on the return edge
+        self._press_t = 0.0
         self.last_click = (0, 0.0, 0)
         self.source = quartz.CGEventSourceCreate(quartz.kCGEventSourceStatePrivate)
         quartz.CGEventSourceSetLocalEventsSuppressionInterval(self.source, 0.0)
@@ -333,11 +338,21 @@ class MacInjector:
             if not math.isfinite(dx) or not math.isfinite(dy):
                 raise ValueError("Non-finite mouse movement")
             nx,ny = self.x+dx,self.y+dy
-            crossing = ((self.side == "left" and nx >= self.left+self.width-1 and dx>0)
-                        or (self.side == "right" and nx <= self.left and dx<0)
-                        or (self.side == "top" and ny >= self.top+self.height-1 and dy>0)
-                        or (self.side == "bottom" and ny <= self.top and dy<0))
-            if crossing and not self.buttons:
+            # Returning takes real travel past the return edge — the entry
+            # parks the cursor on it, so a lone jitter must not bounce back.
+            if self.side == "left":      overshoot = nx-(self.left+self.width-1)
+            elif self.side == "right":   overshoot = self.left-nx
+            elif self.side == "top":     overshoot = ny-(self.top+self.height-1)
+            else:                        overshoot = self.top-ny
+            now = time.monotonic()
+            if overshoot > 0 and not self.buttons:
+                self._press = (self._press + overshoot
+                               if now - self._press_t <= 0.4 else overshoot)
+            else:
+                self._press = 0.0
+            self._press_t = now
+            if self._press >= RETURN_PUSH:
+                self._press = 0.0
                 fraction = ((self.y-self.top)/max(1,self.height-1) if self.side in ("left","right")
                             else (self.x-self.left)/max(1,self.width-1))
                 self.release_all()
@@ -418,6 +433,7 @@ class MacInjector:
                     q.kCGEventRightMouseUp if button==1 else q.kCGEventOtherMouseUp)
             self._mouse(kind,button)
         self.scroll_x = self.scroll_y = 0.0
+        self._press = 0.0
         self.active = False
 
     def close(self):
