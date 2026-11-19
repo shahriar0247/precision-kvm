@@ -11,9 +11,14 @@ documented approximation used by all evdev-level KVM switches.
 """
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
 import select
+import subprocess
 import sys
 import threading
+import time
 from typing import Callable
 
 from . import geometry
@@ -27,8 +32,42 @@ from .safety import EmergencyMonitor
 _BUTTON_NAMES = {BTN_LEFT: "left", BTN_RIGHT: "right", BTN_MIDDLE: "middle",
                  BTN_SIDE: "x1", BTN_EXTRA: "x2"}
 
-PRESS_EVENTS = 2     # consecutive pushes toward an edge before crossing
-REARM_DISTANCE = 48  # px the cursor must retreat before an edge re-arms
+PRESS_THRESHOLD = 240  # raw counts pushed into a boundary before it crosses
+PRESS_GAP_S = 0.2      # pauses in pushing longer than this reset the count
+RETURN_GRACE_S = 0.4   # the just-exited edge stays quiet this long on return
+
+_BRIDGE = Path(__file__).with_name("portal_bridge.py")
+
+
+def portal_barriers(peers: dict, bounds) -> tuple[list[dict], dict]:
+    """Map each peer's facing edge onto a portal pointer barrier.
+
+    Barriers must sit exactly on the outside boundary of the zone union —
+    vertical at x = bounds left or right, horizontal at y = bounds top or
+    bottom — and span only the edge segment the peer actually overlaps.
+    Returns (bridge barrier specs, {barrier_id: (peer_name, side)}).
+    """
+    bx, by, bw, bh = bounds
+    specs, ids, bid = [], {}, 0
+    for name, (px, py, pw, ph) in peers.items():
+        lo_y, hi_y = max(by, py), min(by + bh - 1, py + ph - 1)
+        lo_x, hi_x = max(bx, px), min(bx + bw - 1, px + pw - 1)
+        cx, cy = px + pw / 2, py + ph / 2
+        if cx < bx and lo_y <= hi_y:
+            side, seg = "left", (bx, lo_y, bx, hi_y)
+        elif cx >= bx + bw and lo_y <= hi_y:
+            side, seg = "right", (bx + bw, lo_y, bx + bw, hi_y)
+        elif cy < by and lo_x <= hi_x:
+            side, seg = "top", (lo_x, by, hi_x, by)
+        elif cy >= by + bh and lo_x <= hi_x:
+            side, seg = "bottom", (lo_x, by + bh, hi_x, by + bh)
+        else:
+            continue  # peer isn't flush with any edge — nowhere to cross
+        bid += 1
+        specs.append({"id": bid, "peer": name, "side": side,
+                      "rect": [int(v) for v in seg]})
+        ids[bid] = (name, side)
+    return specs, ids
 
 
 class LinuxCapture:
@@ -62,8 +101,11 @@ class LinuxCapture:
         self._vpos = [0.0, 0.0]
         self._move_dir = [0, 0]
         self._press_side: str | None = None
-        self._press_count = 0
-        self._rearm: dict[str, float] = {}
+        self._press_amt = 0.0
+        self._press_t = 0.0
+        self._grace_until = 0.0
+        self._portal = None          # bridge subprocess while armed
+        self._portal_ids: dict = {}
         self._abs_last: dict[int, dict[int, int]] = {}
         self._devices: list[EvdevDevice] = []
         self._keyboards: list[EvdevDevice] = []
@@ -84,8 +126,8 @@ class LinuxCapture:
         self._stopping.clear()
         self._emergency_requested = False
         self.safety.reset()
-        self._rearm.clear()
-        self._press_side, self._press_count = None, 0
+        self._press_side, self._press_amt = None, 0.0
+        self._grace_until = 0.0
         self._thread = threading.Thread(target=self._run, name="kvm-evdev", daemon=True)
         self._thread.start()
         if not self._ready.wait(5):
@@ -97,6 +139,9 @@ class LinuxCapture:
     def stop(self):
         self._stopping.set()
         self.release()
+        proc, self._portal = self._portal, None
+        if proc is not None:
+            proc.kill()
         if self._thread and self._thread is not threading.current_thread():
             self._thread.join(3)
 
@@ -120,11 +165,11 @@ class LinuxCapture:
         was_active = self.active
         self.active = False
         self.safety.reset()
-        self._press_side, self._press_count = None, 0
+        self._press_side, self._press_amt = None, 0.0
         for device in self._devices:
             device.ungrab()
         if was_active:
-            self._arm_deadband()
+            self._grace_until = time.monotonic() + RETURN_GRACE_S
             x, y = self._return_point()
             self._vpos = [float(x), float(y)]
             try:
@@ -173,6 +218,7 @@ class LinuxCapture:
                 return
             self._fd_map = {d.fd: d for d in self._keyboards + self._pointers}
             self._poller = selector(list(self._fd_map))
+            self._portal = self._portal_start(bounds)
             self._ready.set()
             while not self._stopping.is_set():
                 for fd, _mask in self._poller.poll(200):
@@ -264,7 +310,7 @@ class LinuxCapture:
             self._vpos[code] += value
             if value:
                 self._move_dir[code] = 1 if value > 0 else -1
-            self._move_inactive()
+            self._move_inactive(code, value)
 
     def _abs(self, device: EvdevDevice, code: int, value: int):
         if code not in (ABS_X, ABS_Y):
@@ -282,57 +328,51 @@ class LinuxCapture:
             self._vpos[code] += delta
             if delta:
                 self._move_dir[code] = 1 if delta > 0 else -1
-            self._move_inactive()
+            self._move_inactive(code, delta)
 
-    def _arm_deadband(self):
-        """Suppress the edge just exited until the cursor backs well away —
-        release() lands a couple of px from it, and tiny drift would
-        otherwise bounce straight back into a grab."""
-        if not self._hit:
-            return
-        side = self._hit[1]
-        bx, by, bw, bh = geometry.union_bounds(self._monitors or [(0, 0, 1920, 1080)])
-        target = {"left": bx + REARM_DISTANCE, "right": bx + bw - 1 - REARM_DISTANCE,
-                  "top": by + REARM_DISTANCE, "bottom": by + bh - 1 - REARM_DISTANCE}[side]
-        self._rearm[side] = target
-
-    def _rearm_tick(self, x: float, y: float):
-        for side, target in list(self._rearm.items()):
-            coord = x if side in ("left", "right") else y
-            if (side in ("left", "top") and coord > target
-                    or side in ("right", "bottom") and coord < target):
-                del self._rearm[side]
-
-    def _move_inactive(self):
+    def _move_inactive(self, axis: int, delta: float):
+        if self._portal is not None:
+            return  # compositor barriers report real crossings — no guessing
         if (self._stopping.is_set() or not self.peer_connected
                 or self._keys or self._buttons or self.active):
-            self._press_side, self._press_count = None, 0
+            self._press_side, self._press_amt = None, 0.0
             return
         mons = self._monitors or [(0, 0, 1920, 1080)]
         bounds = geometry.union_bounds(mons)
         x, y = geometry.clamp(bounds, self._vpos[0], self._vpos[1])
         self._vpos = [float(x), float(y)]
-        self._rearm_tick(x, y)
         hit = geometry.hit(mons, self._peer_map(mons), x, y)
         if hit is None:
-            self._press_side, self._press_count = None, 0
+            self._press_side, self._press_amt = None, 0.0
             return
         name, side, nx, ny = hit
-        # A real crossing keeps pushing toward the boundary — parked or
-        # edge-sliding cursors must not fire it.
-        toward = {"left": self._move_dir[0] < 0, "right": self._move_dir[0] > 0,
-                  "top": self._move_dir[1] < 0, "bottom": self._move_dir[1] > 0}[side]
-        if not toward or side in self._rearm:
-            self._press_side, self._press_count = None, 0
+        edge_axis = 0 if side in ("left", "right") else 1
+        if side != self._press_side:
+            self._press_side, self._press_amt = side, 0.0
+        now = time.monotonic()
+        if now - self._press_t > PRESS_GAP_S:
+            self._press_amt = 0.0
+        # Crossing needs pressure: motion must push INTO the boundary, and
+        # it accumulates until a deliberate press crosses the threshold.
+        # A cursor parked at the edge — or one the virtual position drifted
+        # to — never builds pressure, and the just-exited edge stays quiet
+        # for a beat after returning local.
+        toward = (self._move_dir[edge_axis] < 0 if side in ("left", "top")
+                  else self._move_dir[edge_axis] > 0)
+        if now < self._grace_until or not toward:
+            self._press_amt = 0.0
             return
-        if side == self._press_side:
-            self._press_count += 1
-        else:
-            self._press_side, self._press_count = side, 1
-        if self._press_count < PRESS_EVENTS:
+        self._press_t = now  # tangential slides keep the press alive
+        if axis == edge_axis:
+            self._press_amt += abs(delta)
+        if self._press_amt < PRESS_THRESHOLD:
             return
-        self._press_side, self._press_count = None, 0
+        self._press_side, self._press_amt = None, 0.0
+        self._cross(hit, mons)
+
+    def _cross(self, hit, mons):
         self._hit = hit
+        name, side, nx, ny = hit
         self._peer_rect = self._peer_map(mons)[name]
         self._entry_x, self._entry_y = nx, ny
         self.active = True
@@ -345,3 +385,66 @@ class LinuxCapture:
                 continue
         self._emit({"type": "activate", "normalized_y": ny,
                     "normalized_x": nx, "side": side, "peer": name})
+
+    # ----- portal edge detection (Wayland) -----------------------------------
+
+    def _portal_start(self, bounds):
+        """Arm compositor barriers via the portal bridge, if it can run."""
+        if not os.environ.get("WAYLAND_DISPLAY") or not _BRIDGE.exists():
+            return None
+        peers = self._peer_map(self._monitors or [(0, 0, 1920, 1080)])
+        specs, self._portal_ids = portal_barriers(peers, bounds)
+        if not specs:
+            return None
+        for py in ("/usr/bin/python3", "/usr/local/bin/python3"):
+            if (Path(py).exists()
+                    and subprocess.run([py, "-c", "import gi"],
+                                       capture_output=True).returncode == 0):
+                break
+        else:
+            return None
+        try:
+            proc = subprocess.Popen(
+                [py, str(_BRIDGE),
+                 json.dumps({"capabilities": 15, "barriers": specs})],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, bufsize=1)
+        except OSError:
+            return None
+        ready = select.select([proc.stdout], [], [], 8)[0]
+        if not ready or proc.stdout.readline().strip() != "READY":
+            proc.kill()
+            return None
+        threading.Thread(target=self._portal_reader, args=(proc,),
+                         daemon=True, name="kvm-portal").start()
+        return proc
+
+    def _portal_reader(self, proc):
+        for line in proc.stdout:
+            parts = line.split()
+            if len(parts) >= 4 and parts[0] == "EDGE":
+                name, side = self._portal_ids.get(int(parts[1]), (None, None))
+                if name:
+                    try:
+                        self._portal_edge(name, side,
+                                          float(parts[2]), float(parts[3]))
+                    except Exception:
+                        pass
+            elif parts and parts[0] in ("CLOSED", "ERROR"):
+                break
+        self._portal = None  # bridge died — evdev pressure model resumes
+
+    def _portal_edge(self, name, side, x, y):
+        """A real edge crossing reported by the compositor."""
+        if (self._stopping.is_set() or not self.peer_connected
+                or self._keys or self._buttons or self.active
+                or time.monotonic() < self._grace_until):
+            return
+        mons = self._monitors or [(0, 0, 1920, 1080)]
+        peer = self._peer_map(mons).get(name)
+        if peer is None:
+            return
+        cx, cy = geometry.clamp(peer, x, y)
+        nx = (cx - peer[0]) / max(1, peer[2] - 1)
+        ny = (cy - peer[1]) / max(1, peer[3] - 1)
+        self._cross((name, side, nx, ny), mons)

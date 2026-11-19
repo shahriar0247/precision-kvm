@@ -182,10 +182,11 @@ def test_capture_edge_cross_activates_and_release_deactivates(monkeypatch):
     capture, events = _capture(monkeypatch)
     capture.peer_connected = True
     capture._vpos = [1.0, 540.0]
-    # One touch on the edge is not a crossing — a real one keeps pushing.
-    capture._handle(None, linux_input.EV_REL, linux_input.REL_X, -5)
+    # Touching the edge is not a crossing — a real one keeps pressing into it.
+    capture._handle(None, linux_input.EV_REL, linux_input.REL_X, -60)
     assert not capture.active
-    capture._handle(None, linux_input.EV_REL, linux_input.REL_X, -5)
+    for _ in range(3):
+        capture._handle(None, linux_input.EV_REL, linux_input.REL_X, -60)
     activation = next(e for e in events if e["type"] == "activate")
     assert activation["side"] == "left" and capture.active
     events.clear()
@@ -196,25 +197,26 @@ def test_capture_edge_cross_activates_and_release_deactivates(monkeypatch):
     assert 0 <= capture._vpos[0] <= 1920 and 0 <= capture._vpos[1] <= 1080
 
 
-def test_capture_release_deadband_blocks_immediate_regrab(monkeypatch):
+def test_capture_release_grace_blocks_immediate_regrab(monkeypatch):
     capture, events = _capture(monkeypatch)
     capture.peer_connected = True
     capture._vpos = [1.0, 540.0]
-    for _ in range(2):
-        capture._handle(None, linux_input.EV_REL, linux_input.REL_X, -5)
+    for _ in range(4):
+        capture._handle(None, linux_input.EV_REL, linux_input.REL_X, -60)
     assert capture.active
     capture.release()
     assert not capture.active
-    # Landing ~2px from the edge, more leftward drift must NOT re-grab —
-    # this was the "bounces back into the peer" bug.
-    for _ in range(3):
-        capture._handle(None, linux_input.EV_REL, linux_input.REL_X, -5)
+    # Landing ~2px from the edge, pressing again inside the grace window
+    # must NOT re-grab — this was the "bounces back into the peer" bug.
+    for _ in range(6):
+        capture._handle(None, linux_input.EV_REL, linux_input.REL_X, -60)
     assert not capture.active
-    # Retreating past REARM_DISTANCE re-arms the edge for a fresh press.
-    capture._handle(None, linux_input.EV_REL, linux_input.REL_X, 100)
+    # Once the grace window passes, a fresh deliberate press crosses again —
+    # no spatial retreat required (that was the "can't cross back" bug).
+    capture._grace_until = 0.0
     events.clear()
-    for _ in range(2):
-        capture._handle(None, linux_input.EV_REL, linux_input.REL_X, -120)
+    for _ in range(4):
+        capture._handle(None, linux_input.EV_REL, linux_input.REL_X, -60)
     assert capture.active
 
 
@@ -227,6 +229,38 @@ def test_capture_edge_slide_away_does_not_cross(monkeypatch):
         capture._handle(None, linux_input.EV_REL, linux_input.REL_Y, 3)
     assert not capture.active
     assert not any(e["type"] == "activate" for e in events)
+
+
+def test_capture_parked_at_edge_never_builds_pressure(monkeypatch):
+    capture, events = _capture(monkeypatch)
+    capture.peer_connected = True
+    capture._vpos = [0.0, 540.0]
+    # Weak nudges at a pinned edge stay under the threshold — a drifted
+    # virtual position can't phantom-cross on small moves.
+    for _ in range(4):
+        capture._handle(None, linux_input.EV_REL, linux_input.REL_X, -30)
+    assert not capture.active
+
+
+def test_portal_barriers_map_peer_edges():
+    from precision_kvm.linux_capture import portal_barriers
+
+    bounds = (0, 0, 1920, 1200)
+    peers = {"MAC": (-1920, -21, 1920, 1080)}
+    specs, ids = portal_barriers(peers, bounds)
+    assert len(specs) == 1 and specs[0]["peer"] == "MAC"
+    # Left edge sits at x=0 spanning the y-overlap of peer and bounds.
+    assert specs[0]["rect"] == [0, 0, 0, 1058]
+    assert ids[specs[0]["id"]] == ("MAC", "left")
+
+    # A right-side peer yields a barrier just right of the union.
+    specs, ids = portal_barriers({"PC": (1920, 0, 1920, 1200)}, bounds)
+    assert specs[0]["rect"] == [1920, 0, 1920, 1199]
+    assert ids[specs[0]["id"]] == ("PC", "right")
+
+    # A peer flush to no edge produces no barrier — nowhere real to cross.
+    specs, ids = portal_barriers({"FAR": (-5000, 5000, 100, 100)}, bounds)
+    assert not specs and not ids
 
 
 def test_capture_suppresses_edge_cross_while_keys_held(monkeypatch):
