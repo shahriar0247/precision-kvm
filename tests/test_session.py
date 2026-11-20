@@ -194,7 +194,7 @@ def test_reconnect_retries_every_second_and_stops_cleanly():
     stop.is_set.return_value = False
     stop.wait.side_effect = [False, True]
     with patch("precision_kvm.session.run_client", side_effect=ConnectionRefusedError) as connect, \
-         patch("precision_kvm.session.time.monotonic", side_effect=[10, 10.2, 11, 11.4]):
+         patch("precision_kvm.session.time.monotonic", side_effect=[9, 10, 10.2, 11, 11.4]):
         run_client_forever({}, stop, lambda message: None)
     assert connect.call_count == 2
     assert abs(stop.wait.call_args_list[0].args[0] - 0.8) < 0.001

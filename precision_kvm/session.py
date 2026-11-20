@@ -421,6 +421,7 @@ def run_client_forever(config: dict, stop_event=None, status=print, config_path=
             screen = ScreenShareClient(config,
                 status=lambda message: status(f"Screen: {message}"))
             screen.start()
+        last_resolve = time.monotonic()
         while not stop_event.is_set():
             started = time.monotonic()
             try:
@@ -428,7 +429,10 @@ def run_client_forever(config: dict, stop_event=None, status=print, config_path=
                            status=status, config_path=config_path)
             except (OSError, EOFError, ProtocolError, BackpressureError) as exc:
                 status(f"Server unavailable / disconnected ({type(exc).__name__}); retrying every second")
-                if config.get("auto"):
+                # Re-resolve at most once a minute — mDNS probes are expensive
+                # and the configured host should stay tried between them.
+                if config.get("auto") and time.monotonic() - last_resolve > 60:
+                    last_resolve = time.monotonic()
                     _resolve_host(config, status)
             if stop_event.wait(max(0.0, 1.0 - (time.monotonic() - started))):
                 break
@@ -443,10 +447,22 @@ def _resolve_host(config: dict, status) -> None:
     """Fill host/port from mDNS when auto-discovery is enabled."""
     try:
         from .discovery import browse
-        services = browse(1.5)
     except Exception:
         return
-    if not services:
+    # Zeroconf teardown can hang on some platforms — bound the whole probe so
+    # a stuck browse can never wedge the connect loop. The daemon thread dies
+    # with the process if it outlives the join.
+    services: list = []
+    def probe():
+        nonlocal services
+        try:
+            services = browse(1.5)
+        except Exception:
+            pass
+    worker = threading.Thread(target=probe, daemon=True, name="kvm-mdns-probe")
+    worker.start()
+    worker.join(4)
+    if worker.is_alive() or not services:
         return
     service = services[0]
     port = int(service["port"])

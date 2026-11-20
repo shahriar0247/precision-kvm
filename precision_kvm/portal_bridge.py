@@ -144,7 +144,8 @@ def main() -> int:
                 "capabilities": v("u", int(cfg.get("capabilities", 15)))}
         ret = call("CreateSession2", (opts,), "(a{sv})")
         state["session"] = str(ret["session_handle"])
-        call("Start", (state["session"], "", {}), "(osa{sv})")
+        call("Start", (state["session"], "",
+                       {"persist_mode": v("u", 2)}), "(osa{sv})")
     except Exception as exc:
         out("ERROR", str(exc))
         return 1

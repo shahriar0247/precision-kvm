@@ -230,8 +230,12 @@ class LinuxCapture:
                 return
             self._fd_map = {d.fd: d for d in self._keyboards + self._pointers}
             self._poller = selector(list(self._fd_map))
-            self._portal = self._portal_start(bounds)
             self._ready.set()
+            # Arming the portal can take seconds (consent dialog, session
+            # negotiation) — run it beside the poll loop and swap it in when
+            # READY arrives. Until then the evdev pressure model covers edges.
+            threading.Thread(target=self._portal_arm, args=(bounds,),
+                             daemon=True, name="kvm-portal-arm").start()
             while not self._stopping.is_set():
                 for fd, _mask in self._poller.poll(200):
                     device = self._fd_map.get(fd)
@@ -400,6 +404,15 @@ class LinuxCapture:
 
     # ----- portal edge detection (Wayland) -----------------------------------
 
+    def _portal_arm(self, bounds):
+        proc = self._portal_start(bounds)
+        if proc is None:
+            return
+        if self._stopping.is_set():
+            proc.kill()
+            return
+        self._portal = proc
+
     def _portal_start(self, bounds):
         """Arm compositor barriers via the portal bridge, if it can run."""
         if not os.environ.get("WAYLAND_DISPLAY") or not _BRIDGE.exists():
@@ -423,7 +436,9 @@ class LinuxCapture:
                 stderr=subprocess.DEVNULL, text=True, bufsize=1)
         except OSError:
             return None
-        ready = select.select([proc.stdout], [], [], 8)[0]
+        # The portal's consent dialog can sit on screen a while before the
+        # user approves — wait generously; evdev covers edges meanwhile.
+        ready = select.select([proc.stdout], [], [], 90)[0]
         if not ready or proc.stdout.readline().strip() != "READY":
             proc.kill()
             return None
