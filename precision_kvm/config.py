@@ -35,6 +35,7 @@ def load_settings() -> dict:
     path = state_dir() / "settings.json"
     settings = {"mouse_hz": 120, "side": "left", "port": 24819,
                 "peer": "10.0.0.189", "gain": 1.0, "scroll_gain": 1.0,
+                "touchpad_gain": 1.0,
                 "swap_ctrl_cmd": False, "ssh_target": "", "mouse_mode": "raw",
                 "scroll_gain_x": 1.0, "scroll_gain_y": 1.0,
                 "scroll_invert_x": False, "scroll_invert_y": False, "scroll_mode": "pixel",
@@ -71,6 +72,7 @@ def validate_settings(settings: dict) -> dict:
     from .keymap import normalize_keymap
     result = dict(settings)
     for key, low, high in (("gain", 0.1, 5), ("scroll_gain", 0.1, 5),
+                           ("touchpad_gain", 0.1, 5),
                            ("scroll_gain_x", 0.1, 5), ("scroll_gain_y", 0.1, 5),
                            ("emergency_escape_seconds", 0.5, 10),
                            ("peer_align", 0.0, 1.0), ("peer_span", 0.1, 1.0)):

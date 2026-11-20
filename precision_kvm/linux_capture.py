@@ -23,8 +23,8 @@ from typing import Callable
 
 from . import geometry
 from .linux_input import (ABS_X, ABS_Y, BTN_LEFT, BTN_RIGHT, BTN_MIDDLE,
-                          BTN_SIDE, BTN_EXTRA, EV_ABS, EV_KEY, EV_REL,
-                          REL_HWHEEL, REL_HWHEEL_HI_RES, REL_WHEEL,
+                          BTN_SIDE, BTN_EXTRA, BTN_TOUCH, EV_ABS, EV_KEY,
+                          EV_REL, REL_HWHEEL, REL_HWHEEL_HI_RES, REL_WHEEL,
                           REL_WHEEL_HI_RES, REL_X, REL_Y, EvdevDevice,
                           evdev_key_id, input_devices, linux_monitors, selector)
 from .safety import EmergencyMonitor
@@ -75,7 +75,8 @@ class LinuxCapture:
 
     def __init__(self, on_event: Callable[[dict], object], side: str = "left",
                  on_emergency=None, emergency_escape_seconds=1.5,
-                 lock_sync=True, peer_align=0.5, peer_span=0.6, peers=None):
+                 lock_sync=True, peer_align=0.5, peer_span=0.6, peers=None,
+                 touchpad_gain=1.0):
         if side not in {"left", "right", "top", "bottom"}:
             raise ValueError("side must be left, right, top, or bottom")
         self.on_event = on_event
@@ -87,6 +88,7 @@ class LinuxCapture:
         self.peer_align = float(peer_align)
         self.peer_span = float(peer_span)
         self.peers = dict(peers) if peers else None
+        self.touchpad_gain = float(touchpad_gain)
         self._peer_rect: tuple | None = None
         self._monitors: list | None = None
         self._hit: tuple | None = None
@@ -266,7 +268,12 @@ class LinuxCapture:
         if self.locked:
             return
         if ev_type == EV_KEY:
-            if code in _BUTTON_NAMES:
+            if code == BTN_TOUCH:
+                # A touchpad reports absolute positions; each contact must
+                # start a fresh baseline or the first event diffs against the
+                # previous touch and teleports the cursor across the screen.
+                self._abs_last.pop(device.fd, None)
+            elif code in _BUTTON_NAMES:
                 self._button(code, value)
             elif value != 2:  # Kernel autorepeat (value 2) is not a new key event.
                 self._key(code, bool(value))
@@ -338,7 +345,7 @@ class LinuxCapture:
         if self.active:
             if delta:
                 event = {"type": "move", "dx": 0, "dy": 0}
-                event["dx" if code == ABS_X else "dy"] = delta
+                event["dx" if code == ABS_X else "dy"] = delta * self.touchpad_gain
                 self._emit(event)
         else:
             self._vpos[code] += delta

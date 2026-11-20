@@ -186,6 +186,52 @@ def test_capture_scroll_and_button_units(monkeypatch):
     assert {"type": "button", "button": "left", "down": True} in events
 
 
+class _Touchpad:
+    """REL-less absolute pointer — the device shape real touchpads present."""
+    fd = 7
+    is_pointer = True
+    rels: set = set()
+
+
+def test_touchpad_contact_moves_relative_not_absolute(monkeypatch):
+    """Each new touch starts a fresh baseline — no cross-screen teleport."""
+    capture, events = _capture(monkeypatch)
+    capture.active = True
+    pad = _Touchpad()
+    capture._handle(pad, linux_input.EV_KEY, linux_input.BTN_TOUCH, 1)
+    capture._handle(pad, linux_input.EV_ABS, linux_input.ABS_X, 800)
+    capture._handle(pad, linux_input.EV_ABS, linux_input.ABS_Y, 600)
+    assert events == []  # touch-down anchors the baseline without moving
+    capture._handle(pad, linux_input.EV_ABS, linux_input.ABS_X, 810)
+    assert events == [{"type": "move", "dx": 10, "dy": 0}]
+    events.clear()
+    # Lift and re-touch far away: without the reset the first event would
+    # emit a -760 delta and teleport the cursor to the touch position.
+    capture._handle(pad, linux_input.EV_KEY, linux_input.BTN_TOUCH, 0)
+    capture._handle(pad, linux_input.EV_KEY, linux_input.BTN_TOUCH, 1)
+    capture._handle(pad, linux_input.EV_ABS, linux_input.ABS_X, 50)
+    assert events == []
+    capture._handle(pad, linux_input.EV_ABS, linux_input.ABS_X, 55)
+    assert events == [{"type": "move", "dx": 5, "dy": 0}]
+
+
+def test_touchpad_gain_scales_only_remote_deltas(monkeypatch):
+    capture, events = _capture(monkeypatch)
+    capture.touchpad_gain = 2.0
+    capture.active = True
+    pad = _Touchpad()
+    capture._handle(pad, linux_input.EV_KEY, linux_input.BTN_TOUCH, 1)
+    capture._handle(pad, linux_input.EV_ABS, linux_input.ABS_X, 100)
+    capture._handle(pad, linux_input.EV_ABS, linux_input.ABS_X, 110)
+    assert events == [{"type": "move", "dx": 20.0, "dy": 0}]
+    # The virtual cursor tracks raw deltas — edge geometry must not gain.
+    capture.active = False
+    events.clear()
+    capture._handle(pad, linux_input.EV_ABS, linux_input.ABS_X, 115)
+    assert capture._vpos[0] == 5
+    assert events == []
+
+
 def test_capture_edge_cross_activates_and_release_deactivates(monkeypatch):
     capture, events = _capture(monkeypatch)
     capture.peer_connected = True

@@ -637,6 +637,27 @@ class ClipboardBridge:
             self.last_digest = digest
             return bundle
 
+    def force(self):
+        """Read the clipboard even without a detected revision change —
+        a screen crossing is the natural sync point, and watchers can miss
+        changes (GNOME Wayland has no clipboard event source)."""
+        with self.lock:
+            try:
+                bundle = self.backend.read(self.max_bytes)
+            except (OSError, ValueError, PermissionError):
+                return None
+            if not bundle:
+                return None
+            digest = bundle_digest(bundle)
+            if digest == self.last_digest:
+                return None
+            self.last_digest = digest
+            try:
+                self.last_revision = self.backend.revision()
+            except OSError:
+                pass
+            return bundle
+
     def apply(self, bundle, stopped=None):
         validate_bundle(bundle, self.max_bytes)
         with self.lock:
@@ -650,9 +671,10 @@ class ClipboardBridge:
             self.last_revision = self.backend.revision()
 
 
-def _serve_link(channel, backend, max_bytes, stopped, status):
+def _serve_link(channel, backend, max_bytes, stopped, status, force=None):
     if stopped.is_set():
         return
+    force = force or threading.Event()
     bridge = ClipboardBridge(backend, max_bytes, note=status)
     try:
         bridge.baseline()
@@ -673,6 +695,10 @@ def _serve_link(channel, backend, max_bytes, stopped, status):
                 except ValueError:
                     status("Clipboard skipped (unsupported format or configured size limit)")
                     bundle = None
+                if force.is_set():
+                    force.clear()
+                    if not bundle:
+                        bundle = bridge.force()
                 if bundle:
                     send_bundle(channel, bundle, max_bytes, stopped)
                     status("Clipboard sent")
@@ -724,6 +750,12 @@ class ClipboardServer:
         self.thread: threading.Thread | None = None
         self.listener: TLSListener | PlainListener | None = None
         self.channel: FramedSocket | None = None
+        self.force = threading.Event()
+
+    def sync_now(self):
+        """Push the local clipboard to the peer — a screen crossing is the
+        natural sync point, so it does not wait for the watcher to notice."""
+        self.force.set()
 
     def start(self):
         if not self.enabled or (self.thread and self.thread.is_alive()):
@@ -758,7 +790,8 @@ class ClipboardServer:
                     authenticate(self.channel, self.token, server=True)
                     effective = negotiate_limit(self.channel, self.max_bytes, server=True)
                     self.status(f"Clipboard connected (limit {effective / 1024 ** 2:g} MiB)")
-                    _serve_link(self.channel, backend, effective, self.stopped, self.status)
+                    _serve_link(self.channel, backend, effective, self.stopped,
+                                self.status, self.force)
                 except socket.timeout:
                     pass
                 except (OSError, EOFError, ProtocolError, ValueError):
@@ -788,6 +821,12 @@ class ClipboardClient:
         self.stopped = threading.Event()
         self.thread: threading.Thread | None = None
         self.channel: FramedSocket | None = None
+        self.force = threading.Event()
+
+    def sync_now(self):
+        """Push the local clipboard to the peer — a screen crossing is the
+        natural sync point, so it does not wait for the watcher to notice."""
+        self.force.set()
 
     def start(self):
         if self.thread and self.thread.is_alive():
@@ -821,7 +860,8 @@ class ClipboardClient:
                     authenticate(self.channel, self.config["token"], server=False)
                     effective = negotiate_limit(self.channel, self.max_bytes, server=False)
                     self.status(f"Clipboard connected (limit {effective / 1024 ** 2:g} MiB)")
-                    _serve_link(self.channel, backend, effective, self.stopped, self.status)
+                    _serve_link(self.channel, backend, effective, self.stopped,
+                                self.status, self.force)
                 except (OSError, EOFError, ProtocolError, ValueError):
                     pass
                 finally:

@@ -418,14 +418,15 @@ class ControlPanel:
         self.client_frame.grid_remove()
         self.field(inputs, 0, "Relative movement source", "mouse_mode", ("raw", "system"))
         self.field(inputs, 1, "Pointer sensitivity", "gain", bounds=(0.1, 5, 0.1))
-        self.field(inputs, 2, "Vertical scroll sensitivity", "scroll_gain_y", bounds=(0.1, 5, 0.1))
-        self.field(inputs, 3, "Horizontal scroll sensitivity", "scroll_gain_x", bounds=(0.1, 5, 0.1))
-        self.field(inputs, 4, "Scroll units", "scroll_mode", ("pixel", "line"))
-        self.check(inputs, 5, "Reverse vertical scrolling", "scroll_invert_y")
-        self.check(inputs, 6, "Reverse horizontal scrolling", "scroll_invert_x")
-        self.check(inputs, 7, "Bridge Windows desktop gesture shortcuts to Mac", "gesture_bridge")
-        self.check(inputs, 8, "Enable native four-finger swipe recognition (experimental)", "native_touchpad")
-        self.note(inputs, 9, "Raw: hardware-relative motion with linear sensitivity and no added acceleration.\n"
+        self.field(inputs, 2, "Touchpad sensitivity", "touchpad_gain", bounds=(0.1, 5, 0.1))
+        self.field(inputs, 3, "Vertical scroll sensitivity", "scroll_gain_y", bounds=(0.1, 5, 0.1))
+        self.field(inputs, 4, "Horizontal scroll sensitivity", "scroll_gain_x", bounds=(0.1, 5, 0.1))
+        self.field(inputs, 5, "Scroll units", "scroll_mode", ("pixel", "line"))
+        self.check(inputs, 6, "Reverse vertical scrolling", "scroll_invert_y")
+        self.check(inputs, 7, "Reverse horizontal scrolling", "scroll_invert_x")
+        self.check(inputs, 8, "Bridge Windows desktop gesture shortcuts to Mac", "gesture_bridge")
+        self.check(inputs, 9, "Enable native four-finger swipe recognition (experimental)", "native_touchpad")
+        self.note(inputs, 10, "Raw: hardware-relative motion with linear sensitivity and no added acceleration.\n"
                   "System: Windows-accelerated relative motion.\n\n"
                   "Ctrl+Win+Left/Right → Mac desktops; Win+Tab → Mission Control;\n"
                   "Win+D → Show Desktop. Four-finger swipes work if Windows emits these\n"

@@ -172,6 +172,10 @@ class HostSession:
 
     def _emit(self, event):
         try:
+            # Crossing is the natural clipboard sync point — push immediately
+            # instead of waiting for the watcher to notice a change.
+            if event.get("type") in ("activate", "deactivate", "return") and self.clipboard:
+                self.clipboard.sync_now()
             if event.get("type") == "activate":
                 event = dict(event, side=event.get("side") or self.settings["side"],
                              gain=self.settings["gain"],
@@ -264,7 +268,8 @@ class HostSession:
                     mac_mode=self.settings.get("mac_mode", False))
             elif sys.platform == "linux":
                 capture_kwargs.update(
-                    emergency_escape_seconds=self.settings.get("emergency_escape_seconds", 1.5))
+                    emergency_escape_seconds=self.settings.get("emergency_escape_seconds", 1.5),
+                    touchpad_gain=self.settings.get("touchpad_gain", 1.0))
             self.capture = Capture(self._emit, **capture_kwargs)
             self.capture.start()
             self.ready.set()
@@ -430,7 +435,8 @@ def run_client_forever(config: dict, stop_event=None, status=print, config_path=
             started = time.monotonic()
             try:
                 run_client(config, connect_timeout=0.8, stop_event=stop_event,
-                           status=status, config_path=config_path)
+                           status=status, config_path=config_path,
+                           on_cross=clipboard.sync_now if clipboard else None)
             except (OSError, EOFError, ProtocolError, BackpressureError) as exc:
                 status(f"Server unavailable / disconnected ({type(exc).__name__}); retrying every second")
                 # Re-resolve at most once a minute — mDNS probes are expensive
@@ -493,7 +499,7 @@ def _reachable(host: str, port: int, timeout: float = 0.6) -> bool:
 
 
 def run_client(config: dict, connect_timeout=3, stop_event=None, status=print,
-               config_path=None):
+               config_path=None, on_cross=None):
     if sys.platform == "darwin":
         from .mac import MacInjector as Injector
         # Poll rather than fail instantly: TCC can report a fresh grant a beat
@@ -517,7 +523,13 @@ def run_client(config: dict, connect_timeout=3, stop_event=None, status=print,
         raise RuntimeError(f"Input injection is not supported on {sys.platform}")
     stopped = threading.Event()
     buffer = EventBuffer(120)
-    injector = Injector(on_return=buffer.put)
+
+    def on_return(event):
+        buffer.put(event)
+        if on_cross:
+            on_cross()
+
+    injector = Injector(on_return=on_return)
     channel = None
     sender = None
     workers = []
@@ -560,6 +572,8 @@ def run_client(config: dict, connect_timeout=3, stop_event=None, status=print,
             if event.get("type") == "pong":
                 buffer.put({"type": "rtt", "ms": (time.perf_counter() - event["stamp"]) * 1000})
             else:
+                if event.get("type") == "deactivate" and on_cross:
+                    on_cross()
                 if event.get("type") == "activate":
                     tweaks = config.get("tweaks", {})
                     allowed = ("keymap_preset", "gain", "scroll_gain_x", "scroll_gain_y",

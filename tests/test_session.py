@@ -272,6 +272,9 @@ def test_side_channel_clients_start_after_host_resolution_and_share_config():
         def stop(self):
             pass
 
+        def sync_now(self):
+            pass
+
     def fake_run_client(config, **kwargs):
         # Simulate discovery correcting the port after the first failure.
         config["port"] = 24819

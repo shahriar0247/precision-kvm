@@ -218,6 +218,73 @@ def test_bidirectional_link_syncs_without_overwriting_initial_contents_or_loopin
     assert errors == []
 
 
+def test_force_sends_current_clipboard_without_a_detected_change():
+    backend = FakeClipboard({TEXT: b"copied while the link was down"})
+    bridge = ClipboardBridge(backend, 1024)
+    bridge.baseline()
+    assert bridge.changed() is None            # no revision change detected
+    assert bridge.force() == {TEXT: b"copied while the link was down"}
+    assert bridge.force() is None              # same digest — no duplicate send
+
+
+def test_forced_send_does_not_echo_back():
+    backend = FakeClipboard({TEXT: b"shared on crossing"})
+    bridge = ClipboardBridge(backend, 1024)
+    bridge.baseline()
+    bundle = bridge.force()
+    assert bundle
+    bridge.apply(bundle)                       # peer echo of the same digest
+    assert backend.writes == 0                 # is never rewritten locally
+    assert bridge.changed() is None            # and never re-sent
+
+
+def test_force_flag_pushes_current_clipboard_over_the_link():
+    left, right = socket.socketpair()
+    channels = [FramedSocket(left), FramedSocket(right)]
+    backends = [FakeClipboard({TEXT: b"crossing sync"}), FakeClipboard()]
+    stopped = threading.Event()
+    force = threading.Event()
+    errors = []
+
+    def serve(channel, backend, flag):
+        try:
+            _serve_link(channel, backend, 1024 * 1024, stopped,
+                        lambda *_: None, flag)
+        except (OSError, EOFError):
+            pass
+        except Exception as exc:
+            errors.append(exc)
+
+    workers = [threading.Thread(target=serve,
+                                args=(channels[0], backends[0], force)),
+               threading.Thread(target=serve,
+                                args=(channels[1], backends[1], None))]
+    for worker in workers:
+        worker.start()
+
+    def wait_for(predicate):
+        deadline = time.monotonic() + 3
+        while not predicate() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert predicate()
+
+    try:
+        time.sleep(0.1)  # baselines only — initial contents are never pushed
+        assert backends[1].bundle is None
+        force.set()      # a crossing asks for the current clipboard now
+        wait_for(lambda: backends[1].bundle == {TEXT: b"crossing sync"})
+        force.set()      # a second crossing with identical content is quiet
+        time.sleep(0.3)
+        assert backends[1].writes == 1
+    finally:
+        stopped.set()
+        for channel in channels:
+            channel.close()
+        for worker in workers:
+            worker.join(3)
+    assert errors == []
+
+
 def test_stop_prevents_applying_received_clipboard():
     backend = FakeClipboard({TEXT: b"original"})
     bridge = ClipboardBridge(backend, 1024)
