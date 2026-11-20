@@ -70,8 +70,11 @@ def encoder_command(cfg: dict, host: str, port: int, ffmpeg: str) -> list[str]:
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "warning"]
     capture = list(_capture_args() or [])
     if sys.platform == "darwin":
+        # AVFoundation screen input only offers uyvy422/yuyv422/nv12 —
+        # the default yuv420p makes the demuxer fail to open.
         cmd += ["-framerate", str(fps), "-capture_cursor",
-                "1" if cfg.get("cursor", True) else "0"]
+                "1" if cfg.get("cursor", True) else "0",
+                "-pixel_format", "nv12"]
     else:
         cmd += ["-framerate", str(fps)]
     cmd += capture

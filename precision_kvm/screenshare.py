@@ -16,6 +16,7 @@ import time
 from collections import deque
 from typing import Callable
 
+from .config import state_dir
 from .transport import (FramedSocket, ProtocolError, TLSListener, PlainListener,
                         authenticate, connect)
 from . import video_udp
@@ -325,6 +326,7 @@ class ScreenShareClient:
         self._cfg_new = threading.Event()
         self._udp_offer: int | None = None   # UDP port the server listens on
         self._encoder = None                 # ffmpeg subprocess while streaming
+        self._encoder_err = None             # stderr sink for ffmpeg diagnostics
 
     def start(self):
         if self.thread and self.thread.is_alive():
@@ -368,6 +370,15 @@ class ScreenShareClient:
                     self.channel.close()
                 self.channel = None
             self.stopped.wait(max(0.0, 1.0 - (time.monotonic() - started)))
+
+    def _encoder_log(self):
+        """ffmpeg stderr — TCC/demux errors must be diagnosable, not devnull."""
+        if self._encoder_err is None:
+            try:
+                self._encoder_err = (state_dir() / "screen-encoder.log").open("ab")
+            except OSError:
+                self._encoder_err = None
+        return self._encoder_err
 
     def _controls(self, channel: FramedSocket):
         """Reader for host→client JSON control messages."""
@@ -417,7 +428,8 @@ class ScreenShareClient:
                         ffmpeg = video_udp.ffmpeg_path()
                         cmd = video_udp.encoder_command(
                             cfg, self.config["host"], self._udp_offer, ffmpeg)
-                        self._encoder = video_udp.launch(cmd)
+                        self._encoder = video_udp.launch(
+                            cmd, self._encoder_log())
                         if self._encoder is None:
                             self.status("Screen: hardware encoder failed to start")
                             self.stopped.wait(2.0)
