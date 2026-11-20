@@ -390,7 +390,11 @@ class HostSession:
         link.last_rx = time.monotonic()
         kind = event.get("type")
         if kind == "return" and self.capture:
-            self.capture.return_local(event.get("normalized_y"), event.get("normalized_x"))
+            # Ungrab + portal cursor warp take tens of ms; doing it inline in
+            # the reader stalls every pong -> fake 40-80ms RTT and a felt hitch.
+            threading.Thread(target=self.capture.return_local,
+                             args=(event.get("normalized_y"), event.get("normalized_x")),
+                             daemon=True, name="kvm-return-local").start()
             if self.active_link is link:
                 self.active_link = None
         elif kind == "hello":

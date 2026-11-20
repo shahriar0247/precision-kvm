@@ -44,7 +44,7 @@ MOUSEEVENTF_MOVE = 0x0001
 SPI_GETMOUSE = 0x0003
 SPI_SETMOUSE = 0x0004
 
-RETURN_PUSH = 150  # deltas pushed into the return edge before control returns
+RETURN_PUSH = 80  # deltas pushed into the return edge before control returns
 
 
 class WindowsInjector:

@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 from .keymap import KeyMapper, effective_vk, mac_keycode as mac_keycode
 
 
-RETURN_PUSH = 150  # deltas pushed into the return edge before control returns
+RETURN_PUSH = 80  # deltas pushed into the return edge before control returns
 
 
 class MacInjector:

@@ -32,7 +32,7 @@ _INJECT_KEYS = set(LINUX_KEYS) | set(_BUTTON_CODES.values())
 _INJECT_RELS = {REL_X, REL_Y, REL_WHEEL, REL_HWHEEL,
                 REL_WHEEL_HI_RES, REL_HWHEEL_HI_RES}
 
-RETURN_PUSH = 150  # deltas pushed into the return edge before control returns
+RETURN_PUSH = 80  # deltas pushed into the return edge before control returns
 
 
 class LinuxInjector:
