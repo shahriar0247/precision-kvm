@@ -45,7 +45,7 @@ Either machine can host or client — flip the role picker at the top of the pan
 
 - **Clipboard follows the cursor** — text and PNG images sync both ways; copy on the PC, paste on the Mac.
 - **Lock sync** — lock Windows and the Mac locks too; input is never shared onto a lock screen.
-- **Mac shortcuts on Windows** — one toggle and Alt behaves like Command (Alt+C/V/Space/Q/arrows) while Alt+Tab stays Windows.
+- **Mac shortcuts on Windows** — one toggle and Alt behaves like Command (Alt+C/V/Space/Q/arrows) while other Alt+key combos stay real Windows Alt.
 - **Any-key remapping** — named keys, scan codes, media keys, per-modifier; a full keymap table.
 - **Gestures** — desktop-switch shortcuts bridge to Mission Control; experimental 4-finger swipe recognition.
 - **Live latency graph** — the panel shows the actual round-trip time while you share.
@@ -58,14 +58,14 @@ Either machine can host or client — flip the role picker at the top of the pan
 
 ![Windows client tweaks](docs/assets/windows-tweaks.png)
 
-The optional screen share is JPEG frames for keeping an eye on a remote display — it doesn't replace a hardware KVM for BIOS or login screens.
+The optional screen share streams hardware-encoded H.264/HEVC over UDP (VideoToolbox on macOS, VAAPI/NVENC or libx264 on Linux) with a JPEG/TCP fallback — codec, bitrate, keyframe interval, fps and downscale are tunable in the Screen share tab. It doesn't replace a hardware KVM for BIOS or login screens.
 
 ## Controls
 
 | Action | Result |
 |---|---|
 | Cross the configured edge | Control the client |
-| Cross back | Return to the host |
+| Push through the edge back | Return to the host — deliberate travel only, so a touchpad brush never bounces you out |
 | **Ctrl+Alt+F12** | Return locally, host keeps running |
 | **Hold Esc 1.5 s** | Emergency stop — disarms until you restart |
 | Close window | Hide to tray |
@@ -88,7 +88,7 @@ Checks: `pytest -q` · `ruff check precision_kvm tests` · `mypy precision_kvm` 
 - One shared session at a time: crossing activates a single client; returning frees it for the next crossing.
 - Secure desktops, login screens, elevated apps and macOS Secure Input block capture/injection — that's the OS working as intended.
 - Rebuilding the Mac app revokes Accessibility — re-toggle it after each update.
-- Linux: package installs, but there are no input backends yet.
+- Linux: host capture and client injection work through evdev/uinput — needs `input` group access (`sudo bash tools/install_linux_input.sh`, then re-login). Clipboard needs `wl-clipboard` (Wayland) or `xclip` (X11). The compositor hides the real pointer position, so edge crossing tracks a virtual cursor that self-corrects at screen edges; screen capture still requires Windows/macOS.
 - ~0.9 ms is transport RTT on a wired gigabit pair — not a jitter-free guarantee; see [measurements](reports/README.md).
 
 [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md) · MIT licensed
