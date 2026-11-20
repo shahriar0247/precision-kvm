@@ -108,6 +108,36 @@ def test_video_udp_encoder_codec_and_scale():
     assert not any(a.startswith("scale=") for a in full)
 
 
+def test_normalize_cfg_cap_res_preset_and_viewer():
+    cfg = normalize_cfg({"cap_res": "viewer", "preset": "fast",
+                         "viewer_w": 1920, "viewer_h": 1080})
+    assert cfg["cap_res"] == "viewer" and cfg["preset"] == "fast"
+    assert (cfg["viewer_w"], cfg["viewer_h"]) == (1920, 1080)
+    bad = normalize_cfg({"cap_res": "rm -rf /", "preset": "placebo",
+                         "viewer_w": 99999})
+    assert bad["cap_res"] == "native" and bad["preset"] == "ultrafast"
+    assert bad["viewer_w"] == 16384
+
+
+def test_video_udp_encoder_cap_res_filters():
+    """cap_res drives the pre-encode scale filter; viewer targets panel dims."""
+    from precision_kvm import video_udp
+
+    def filters(cfg):
+        joined = " ".join(video_udp.encoder_command(
+            cfg, "192.168.50.1", 24823, "/ff"))
+        return joined
+
+    assert "scale=-2:1080" in filters({"cap_res": "1080", "scale": 0.5})
+    assert "scale=1920:1080:force_original_aspect_ratio=decrease" in filters(
+        {"cap_res": "1920x1080"})
+    viewer = filters({"cap_res": "viewer", "viewer_w": 1600, "viewer_h": 900})
+    assert "scale=1600:900" in viewer
+    # Unknown viewer dims fall back to the scale factor, never native.
+    fallback = filters({"cap_res": "viewer", "scale": 0.5})
+    assert "scale=iw*0.5:ih*0.5" in fallback
+
+
 def test_video_udp_decoder_command_low_delay():
     from precision_kvm import video_udp
     cmd = video_udp.decoder_command(24823, "/usr/bin/ffmpeg")

@@ -233,32 +233,61 @@ class ControlPanel:
             ttk.Button(srow, text=preset,
                        command=preset_command(preset)).pack(side="left", padx=2)
         self.controls.extend((start, stopp, restart, full))
-        self.field(screen, 1, "Frames per second", "screen_fps",
+
+        def group(row, title):
+            box = ttk.LabelFrame(screen, text=title)
+            box.grid(row=row, column=0, columnspan=2, sticky="ew", pady=4)
+            inner = ttk.Frame(box)
+            inner.pack(fill="x", padx=6, pady=2)
+            return inner
+
+        # Input — what the client captures.
+        input_box = group(1, "Input — capture")
+        self.field(input_box, 0, "Frames per second", "screen_fps",
                    ("1", "5", "10", "15", "24", "30", "60"), host_only=True)
-        self.field(screen, 2, "Codec (UDP hardware path)", "screen_codec",
-                   ("h264", "hevc"), host_only=True)
-        self.field(screen, 3, "Bitrate cap kbps (0 = unlimited)", "screen_kbps",
-                   ("0", "2000", "5000", "8000", "15000", "20000",
-                    "40000", "80000"), host_only=True, editable=True)
-        self.field(screen, 4, "Resolution scale", "screen_scale",
-                   ("100%", "75%", "50%", "25%", "10%"), host_only=True)
+        self.field(input_box, 1, "Capture resolution", "screen_cap_res",
+                   ("native", "viewer", "2160", "1440", "1080", "720",
+                    "480", "1920x1080", "1280x720"), host_only=True,
+                   editable=True)
+        self.field(input_box, 2, "Resolution scale (used by 'native')",
+                   "screen_scale", ("100%", "75%", "50%", "25%", "10%"),
+                   host_only=True)
         self.variables["screen_scale"].set(
             f"{round(_num(self.settings.get('screen_scale', 1.0), 1.0) * 100)}%")
-        self.field(screen, 5, "Keyframe interval frames (0 = auto)", "screen_gop",
-                   bounds=(0, 600, 15), host_only=True)
-        self.field(screen, 6, "JPEG quality (10–95, fallback only)", "screen_quality",
-                   bounds=(10, 95, 5), host_only=True)
-        self.check(screen, 7, "Black && white (grayscale — smaller and faster)",
-                   "screen_gray", host_only=True)
-        self.check(screen, 8, "Show the client's cursor in the feed",
+        self.field(input_box, 3, "Client monitor (0 = whole desktop)",
+                   "screen_monitor", bounds=(0, 7, 1), host_only=True)
+        self.check(input_box, 4, "Show the client's cursor in the feed",
                    "screen_cursor", host_only=True)
-        self.field(screen, 9, "Client monitor (0 = whole desktop)", "screen_monitor",
-                   bounds=(0, 7, 1), host_only=True)
+        self.check(input_box, 5, "Black && white (grayscale — smaller and faster)",
+                   "screen_gray", host_only=True)
+
+        # Processing — encode.
+        proc_box = group(2, "Processing — encode")
+        self.field(proc_box, 0, "Codec (UDP hardware path)", "screen_codec",
+                   ("h264", "hevc"), host_only=True)
+        self.field(proc_box, 1, "Software encoder speed (libx264 only)",
+                   "screen_preset",
+                   ("ultrafast", "superfast", "veryfast", "faster", "fast",
+                    "medium"), host_only=True)
+        self.field(proc_box, 2, "Keyframe interval frames (0 = auto)",
+                   "screen_gop", bounds=(0, 600, 15), host_only=True)
+        self.field(proc_box, 3, "JPEG quality (10–95, fallback only)",
+                   "screen_quality", bounds=(10, 95, 5), host_only=True)
+
+        # Output — transport and how the feed fills the panel.
+        out_box = group(3, "Output — transport & display")
+        self.field(out_box, 0, "Bitrate cap kbps (0 = unlimited)", "screen_kbps",
+                   ("0", "2000", "5000", "8000", "15000", "20000",
+                    "40000", "80000"), host_only=True, editable=True)
+        self.field(out_box, 1, "Display fit", "screen_fit",
+                   ("fill", "width", "contain"), host_only=True)
         for key in ("screen_fps", "screen_codec", "screen_quality", "screen_scale",
                     "screen_kbps", "screen_gop", "screen_gray", "screen_cursor",
-                    "screen_monitor"):
+                    "screen_monitor", "screen_cap_res", "screen_preset"):
             self.variables[key].trace_add("write",
                                           lambda *_: self._screen_push(immediate=False))
+        self.variables["screen_fit"].trace_add(
+            "write", lambda *_: self._render_video())
         self._push_after: str | None = None
         self._last_image = None        # latest full-res PIL frame for re-render
         # Live stats table — one row of metric label/value pairs above the feed.
@@ -284,7 +313,7 @@ class ControlPanel:
                                    "then press Start stream",
                               fg="#8b98ad", font=("Segoe UI", 10))
         self.video.grid(row=11, column=0, columnspan=2, sticky="nsew", pady=4)
-        self.video.bind("<Configure>", lambda _e: self._render_video())
+        self.video.bind("<Configure>", lambda _e: self._video_resized())
         screen.rowconfigure(11, weight=1)
         self.screen_stats = tk.StringVar(value="Screen share is idle")
         stats_label = ttk.Label(screen, textvariable=self.screen_stats,
@@ -789,6 +818,15 @@ class ControlPanel:
         codec_raw = str(self.variables["screen_codec"].get())
         codec = {label: value for value, label
                  in DISPLAY_OPTIONS["screen_codec"].items()}.get(codec_raw, codec_raw)
+        # The panel's real pixels — lets "viewer" capture encode at display
+        # size instead of the client's (often much larger) native resolution.
+        vw = vh = 0
+        try:
+            vw, vh = self.video.winfo_width(), self.video.winfo_height()
+            if vw < 64 or vh < 64:
+                vw = vh = 0
+        except (AttributeError, tk.TclError):
+            pass
         return {"enabled": bool(self._screen_on.get()),
                 "fps": number("screen_fps", 15), "quality": number("screen_quality", 60),
                 "scale": scale, "gray": bool(self.variables["screen_gray"].get()),
@@ -796,7 +834,10 @@ class ControlPanel:
                 "kbps": number("screen_kbps", 8000),
                 "monitor": int(number("screen_monitor", 0)),
                 "codec": codec if codec in ("h264", "hevc") else "h264",
-                "gop": int(number("screen_gop", 0))}
+                "gop": int(number("screen_gop", 0)),
+                "cap_res": str(self.variables["screen_cap_res"].get() or "native"),
+                "preset": str(self.variables["screen_preset"].get() or "ultrafast"),
+                "viewer_w": vw, "viewer_h": vh}
 
     def _screen_preset(self, name: str):
         values = {"LAN turbo":  ("60", "50", "100%", "40000"),
@@ -1180,14 +1221,27 @@ class ControlPanel:
         canvas.create_text(w - 8, 36, anchor="e", text="round-trip",
                            fill="#8b98ad", font=("Segoe UI", 8))
 
+    def _video_resized(self):
+        self._render_video()
+        # "viewer" capture encodes at panel size — a resize renegotiates it.
+        if str(self.variables["screen_cap_res"].get()) == "viewer":
+            self._screen_push(immediate=False)
+
     def _render_video(self):
-        """Draw the latest frame scaled to the panel's width — the feed always
-        fills the view regardless of the encode resolution/scale."""
+        """Draw the latest frame per the display-fit mode: fill stretches to
+        the panel, width scales to width, contain fits inside (letterbox)."""
         if self._last_image is None or ImageTk is None:
             return
         width = max(300, self.video.winfo_width())
+        height = max(200, self.video.winfo_height())
+        fit = str(self.variables["screen_fit"].get() or "fill")
         image = self._last_image.copy()
-        image.thumbnail((width, width * 4))   # width-bound, aspect preserved
+        if fit == "fill":
+            image = image.resize((width, height))
+        elif fit == "contain":
+            image.thumbnail((width, height))
+        else:
+            image.thumbnail((width, width * 4))   # width-bound, aspect kept
         photo = ImageTk.PhotoImage(image)
         self._photo = photo  # keep a reference or Tk drops the image
         self.video.configure(image=photo, text="")
@@ -1203,8 +1257,12 @@ class ControlPanel:
             self._last_image = image
             if self._fs_label is not None:
                 fs_image = image.copy()
-                fs_image.thumbnail((self.root.winfo_screenwidth(),
-                                    self.root.winfo_screenheight()))
+                if str(self.variables["screen_fit"].get() or "fill") == "fill":
+                    fs_image = fs_image.resize((self.root.winfo_screenwidth(),
+                                               self.root.winfo_screenheight()))
+                else:
+                    fs_image.thumbnail((self.root.winfo_screenwidth(),
+                                        self.root.winfo_screenheight()))
                 self._fs_photo = ImageTk.PhotoImage(fs_image)
                 self._fs_label.configure(image=self._fs_photo)
             self._render_video()

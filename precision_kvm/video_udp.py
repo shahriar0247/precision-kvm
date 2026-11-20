@@ -69,6 +69,25 @@ def encoder_command(cfg: dict, host: str, port: int, ffmpeg: str) -> list[str]:
     codec = str(cfg.get("codec", "h264"))
     gop = int(cfg.get("gop") or 0) or max(fps // 2, 15)
     scale = min(1.0, max(0.1, float(cfg.get("scale", 1.0) or 1.0)))
+    # Encode resolution — Parsec encodes at display size: capturing a retina
+    # Mac at native and scaling to the viewer's panel wastes encoder and
+    # bandwidth alike. "viewer" targets the host panel's exact pixels.
+    res = str(cfg.get("cap_res", "native") or "native")
+    filters: list[str] = []
+    if res == "viewer":
+        vw, vh = int(cfg.get("viewer_w") or 0), int(cfg.get("viewer_h") or 0)
+        if vw > 0 and vh > 0:
+            filters = [f"scale={vw}:{vh}:force_original_aspect_ratio=decrease"]
+        elif scale < 1.0:
+            filters = [f"scale=iw*{scale:.3g}:ih*{scale:.3g}"]
+    elif res not in ("", "native"):
+        if "x" in res:
+            w, h = res.split("x", 1)
+            filters = [f"scale={w}:{h}:force_original_aspect_ratio=decrease"]
+        else:  # "720"/"1080"/"1440"/"2160" — height cap, aspect kept
+            filters = [f"scale=-2:{res}"]
+    elif scale < 1.0:
+        filters = [f"scale=iw*{scale:.3g}:ih*{scale:.3g}"]
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "warning"]
     capture = list(_capture_args() or [])
     if sys.platform == "darwin":
@@ -80,9 +99,6 @@ def encoder_command(cfg: dict, host: str, port: int, ffmpeg: str) -> list[str]:
     else:
         cmd += ["-framerate", str(fps)]
     cmd += capture
-    # Downscale before encoding — cheaper encode and less bandwidth; the
-    # viewer upscales to its panel so the user sees a full-size feed anyway.
-    filters = [f"scale=iw*{scale:.3g}:ih*{scale:.3g}"] if scale < 1.0 else []
     if sys.platform == "darwin":
         vcodec = "hevc_videotoolbox" if codec == "hevc" else "h264_videotoolbox"
         cmd += ["-c:v", vcodec,
@@ -91,13 +107,16 @@ def encoder_command(cfg: dict, host: str, port: int, ffmpeg: str) -> list[str]:
             cmd += ["-vf", ",".join(filters)]
     elif os.environ.get("DISPLAY") and os.path.exists("/dev/dri/renderD128"):
         vcodec = "hevc_vaapi" if codec == "hevc" else "h264_vaapi"
-        filters = [f"scale=iw*{scale:.3g}:ih*{scale:.3g}"] if scale < 1.0 else []
         cmd += ["-vaapi_device", "/dev/dri/renderD128",
                 "-vf", ",".join([*filters, "format=nv12,hwupload"]),
                 "-c:v", vcodec]
     else:
         vcodec = "libx265" if codec == "hevc" else "libx264"
-        cmd += ["-c:v", vcodec, "-preset", "ultrafast", "-tune", "zerolatency"]
+        preset = str(cfg.get("preset", "ultrafast"))
+        if preset not in ("ultrafast", "superfast", "veryfast", "faster",
+                          "fast", "medium"):
+            preset = "ultrafast"
+        cmd += ["-c:v", vcodec, "-preset", preset, "-tune", "zerolatency"]
         if filters:
             cmd += ["-vf", ",".join(filters)]
     cmd += ["-g", str(gop), "-b:v", f"{kbps}k", "-maxrate", f"{kbps}k",

@@ -9,6 +9,7 @@ through the video view.
 from __future__ import annotations
 
 import io
+import re
 import socket
 import tempfile
 import threading
@@ -25,7 +26,12 @@ SCREEN_PORT_OFFSET = 4
 SCREEN_MAX_FRAME = 8 * 1024 * 1024
 DEFAULT_CFG = {"enabled": False, "fps": 15, "quality": 60, "scale": 1.0,
                "gray": False, "kbps": 8000, "monitor": 0, "cursor": True,
-               "codec": "h264", "gop": 0}
+               "codec": "h264", "gop": 0, "cap_res": "native",
+               "preset": "ultrafast", "viewer_w": 0, "viewer_h": 0}
+
+_CAP_RES = re.compile(r"(native|viewer|\d{3,4}|\d{2,5}x\d{2,5})")
+_ENCODER_PRESETS = ("ultrafast", "superfast", "veryfast", "faster",
+                    "fast", "medium")
 
 # Classic pointer arrow, ~11×18 px, composited over the feed.
 CURSOR_POLY = ((0, 0), (0, 16), (4, 12), (7, 18), (9, 17), (6, 11), (11, 11))
@@ -95,6 +101,12 @@ def normalize_cfg(values: dict) -> dict:
     cfg["monitor"] = max(0, int(_num(cfg["monitor"], DEFAULT_CFG["monitor"])))
     cfg["codec"] = cfg["codec"] if str(cfg["codec"]) in ("h264", "hevc") else "h264"
     cfg["gop"] = min(600, max(0, int(_num(cfg["gop"], DEFAULT_CFG["gop"]))))
+    res = str(cfg["cap_res"])
+    cfg["cap_res"] = res if _CAP_RES.fullmatch(res) else "native"
+    cfg["preset"] = (cfg["preset"] if str(cfg["preset"]) in _ENCODER_PRESETS
+                     else "ultrafast")
+    cfg["viewer_w"] = min(16384, max(0, int(_num(cfg["viewer_w"], 0))))
+    cfg["viewer_h"] = min(16384, max(0, int(_num(cfg["viewer_h"], 0))))
     return cfg
 
 

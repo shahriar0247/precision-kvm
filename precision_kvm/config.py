@@ -52,7 +52,9 @@ def load_settings() -> dict:
                 "screen_share": True, "screen_enabled": False,
                 "screen_fps": 15, "screen_quality": 60, "screen_scale": 1.0,
                 "screen_gray": False, "screen_kbps": 8000, "screen_monitor": 0,
-                "screen_cursor": True, "screen_codec": "h264", "screen_gop": 0}
+                "screen_cursor": True, "screen_codec": "h264", "screen_gop": 0,
+                "screen_cap_res": "native", "screen_preset": "ultrafast",
+                "screen_fit": "fill"}
     if path.exists():
         saved = json.loads(path.read_text(encoding="utf-8"))
         settings.update(saved)
