@@ -24,7 +24,8 @@ from . import video_udp
 SCREEN_PORT_OFFSET = 4
 SCREEN_MAX_FRAME = 8 * 1024 * 1024
 DEFAULT_CFG = {"enabled": False, "fps": 15, "quality": 60, "scale": 1.0,
-               "gray": False, "kbps": 8000, "monitor": 0, "cursor": True}
+               "gray": False, "kbps": 8000, "monitor": 0, "cursor": True,
+               "codec": "h264", "gop": 0}
 
 # Classic pointer arrow, ~11×18 px, composited over the feed.
 CURSOR_POLY = ((0, 0), (0, 16), (4, 12), (7, 18), (9, 17), (6, 11), (11, 11))
@@ -92,6 +93,8 @@ def normalize_cfg(values: dict) -> dict:
     cfg["scale"] = min(1.0, max(0.1, _num(cfg["scale"], DEFAULT_CFG["scale"])))
     cfg["kbps"] = min(200_000, max(0, int(_num(cfg["kbps"], DEFAULT_CFG["kbps"]))))
     cfg["monitor"] = max(0, int(_num(cfg["monitor"], DEFAULT_CFG["monitor"])))
+    cfg["codec"] = cfg["codec"] if str(cfg["codec"]) in ("h264", "hevc") else "h264"
+    cfg["gop"] = min(600, max(0, int(_num(cfg["gop"], DEFAULT_CFG["gop"]))))
     return cfg
 
 
@@ -166,6 +169,8 @@ class ScreenShareServer:
         self._fps_count = 0
         self._fps = 0.0
         self._decoder = None          # ffmpeg subprocess while UDP plane is live
+        self._transport = "—"         # "UDP/H.264" | "JPEG/TCP" once frames flow
+        self._last_frame_at = 0.0
 
     @property
     def client_connected(self) -> bool:
@@ -203,7 +208,10 @@ class ScreenShareServer:
     def poll_frame(self):
         """Return (image, stats) once per new frame, else (None, stats)."""
         stats = {"fps": self._fps, "mbps": 0.0, "size": None,
-                 "connected": self.client_connected}
+                 "connected": self.client_connected,
+                 "transport": self._transport,
+                 "age_ms": (time.monotonic() - self._last_frame_at) * 1000
+                 if self._last_frame_at else None}
         self._new.clear()
         with self._frame_lock:
             if self._latest is None:
@@ -211,6 +219,7 @@ class ScreenShareServer:
             image, info = self._latest
             self._latest = None
         stats.update(info)
+        stats["age_ms"] = (time.monotonic() - self._last_frame_at) * 1000
         return image, stats
 
     def _run(self):
@@ -271,6 +280,8 @@ class ScreenShareServer:
                     window_start = now
                 self._fps_count += 1
                 mbps = window_bytes * 8 / 1e6 / max(0.001, now - window_start)
+                self._transport = "JPEG/TCP"
+                self._last_frame_at = now
                 with self._frame_lock:
                     self._latest = (image, {"size": (image.width, image.height),
                                             "mbps": mbps, "fps": self._fps})
@@ -304,6 +315,8 @@ class ScreenShareServer:
                     self._fps = self._fps_count / max(0.001, now - self._fps_start)
                     self._fps_count = 0
                     self._fps_start = now
+                self._transport = f"UDP/{self.cfg['codec'].upper()}"
+                self._last_frame_at = now
                 with self._frame_lock:
                     self._latest = (image, {"size": (width, height),
                                             "mbps": 0.0, "fps": self._fps})

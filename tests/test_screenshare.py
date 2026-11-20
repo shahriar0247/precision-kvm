@@ -82,6 +82,32 @@ def test_video_udp_encoder_command_hw_flags():
                    ("h264_vaapi", "h264_nvenc", "h264_qsv", "libx264"))
 
 
+def test_normalize_cfg_codec_and_gop():
+    cfg = normalize_cfg({"codec": "hevc", "gop": 120})
+    assert cfg["codec"] == "hevc" and cfg["gop"] == 120
+    bad = normalize_cfg({"codec": "vp9", "gop": -4})
+    assert bad["codec"] == "h264" and bad["gop"] == 0
+    assert normalize_cfg({"gop": 9999})["gop"] == 600
+
+
+def test_video_udp_encoder_codec_and_scale():
+    """Codec choice switches the HW encoder; scale<1 adds a downscale filter."""
+    from precision_kvm import video_udp
+    hevc = video_udp.encoder_command(
+        {"fps": 60, "kbps": 12000, "codec": "hevc"}, "192.168.50.1", 24823, "/ff")
+    scaled = video_udp.encoder_command(
+        {"fps": 60, "kbps": 12000, "scale": 0.5}, "192.168.50.1", 24823, "/ff")
+    if sys.platform == "darwin":
+        assert "hevc_videotoolbox" in hevc
+        assert any(a.startswith("scale=") for a in scaled)
+    full = video_udp.encoder_command(
+        {"fps": 60, "kbps": 12000, "scale": 1.0, "gop": 30},
+        "192.168.50.1", 24823, "/ff")
+    gop_at = full.index("-g") + 1
+    assert full[gop_at] == "30"
+    assert not any(a.startswith("scale=") for a in full)
+
+
 def test_video_udp_decoder_command_low_delay():
     from precision_kvm import video_udp
     cmd = video_udp.decoder_command(24823, "/usr/bin/ffmpeg")

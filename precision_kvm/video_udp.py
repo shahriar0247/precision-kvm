@@ -59,14 +59,16 @@ def _capture_args() -> list[str] | None:
 
 
 def encoder_command(cfg: dict, host: str, port: int, ffmpeg: str) -> list[str]:
-    """Capture → HW H.264 → MPEG-TS over UDP to host:port.
+    """Capture → HW H.264/HEVC → MPEG-TS over UDP to host:port.
 
     Low-latency flags follow Parsec's approach: realtime HW encoder priority,
     short GOP, resend_headers so mid-stream joins/losses resync quickly.
     """
     fps = max(1, int(cfg.get("fps", 30)))
     kbps = max(500, int(cfg.get("kbps", 8000)))
-    gop = max(fps // 2, 15)
+    codec = str(cfg.get("codec", "h264"))
+    gop = int(cfg.get("gop") or 0) or max(fps // 2, 15)
+    scale = min(1.0, max(0.1, float(cfg.get("scale", 1.0) or 1.0)))
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "warning"]
     capture = list(_capture_args() or [])
     if sys.platform == "darwin":
@@ -78,14 +80,26 @@ def encoder_command(cfg: dict, host: str, port: int, ffmpeg: str) -> list[str]:
     else:
         cmd += ["-framerate", str(fps)]
     cmd += capture
+    # Downscale before encoding — cheaper encode and less bandwidth; the
+    # viewer upscales to its panel so the user sees a full-size feed anyway.
+    filters = [f"scale=iw*{scale:.3g}:ih*{scale:.3g}"] if scale < 1.0 else []
     if sys.platform == "darwin":
-        cmd += ["-c:v", "h264_videotoolbox",
+        vcodec = "hevc_videotoolbox" if codec == "hevc" else "h264_videotoolbox"
+        cmd += ["-c:v", vcodec,
                 "-realtime", "1", "-prio_speed", "1", "-allow_sw", "0"]
+        if filters:
+            cmd += ["-vf", ",".join(filters)]
     elif os.environ.get("DISPLAY") and os.path.exists("/dev/dri/renderD128"):
+        vcodec = "hevc_vaapi" if codec == "hevc" else "h264_vaapi"
+        filters = [f"scale=iw*{scale:.3g}:ih*{scale:.3g}"] if scale < 1.0 else []
         cmd += ["-vaapi_device", "/dev/dri/renderD128",
-                "-vf", "format=nv12,hwupload", "-c:v", "h264_vaapi"]
+                "-vf", ",".join([*filters, "format=nv12,hwupload"]),
+                "-c:v", vcodec]
     else:
-        cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency"]
+        vcodec = "libx265" if codec == "hevc" else "libx264"
+        cmd += ["-c:v", vcodec, "-preset", "ultrafast", "-tune", "zerolatency"]
+        if filters:
+            cmd += ["-vf", ",".join(filters)]
     cmd += ["-g", str(gop), "-b:v", f"{kbps}k", "-maxrate", f"{kbps}k",
             "-bufsize", f"{max(kbps // 2, 500)}k",
             "-f", "mpegts", "-mpegts_flags", "+resend_headers",

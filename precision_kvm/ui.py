@@ -60,6 +60,7 @@ DISPLAY_OPTIONS = {
     "scroll_mode": {"pixel": "Smooth pixels", "line": "Traditional lines"},
     "keymap_preset": {"option_cmd": "Mac layout · Alt = Command, Win = Option", "native": "Windows modifiers",
                       "ctrl_cmd": "Swap Ctrl and Command", "mac_layout": "Mac layout · Control unchanged"},
+    "screen_codec": {"h264": "H.264 · recommended", "hevc": "HEVC · smaller bitrate"},
 }
 
 
@@ -176,11 +177,11 @@ class ControlPanel:
         connection, inputs, keys, sharing, tweaks, wtweaks, logs, screen = (
             ttk.Frame(notebook, padding=18) for _ in range(8))
         bodies = []
-        for frame, title in ((connection, "Connection"), (inputs, "Mouse & gestures"),
+        for frame, title in ((connection, "Connection"), (screen, "Screen share"),
+                             (inputs, "Mouse & gestures"),
                              (keys, "Key remapping"), (tweaks, "Mac Tweaks"),
                              (wtweaks, "Windows Tweaks"),
-                             (sharing, "Clipboard & safety"), (logs, "Activity log"),
-                             (screen, "Screen share")):
+                             (sharing, "Clipboard & safety"), (logs, "Activity log")):
             if frame is logs:
                 notebook.add(logs, text=title)
                 logs.columnconfigure(1, weight=1)
@@ -190,7 +191,7 @@ class ControlPanel:
             scroller.body.columnconfigure(1, weight=1)
             self._scrollframes.append(scroller)
             bodies.append(scroller.body)
-        connection, inputs, keys, tweaks, wtweaks, sharing, screen = bodies
+        connection, screen, inputs, keys, tweaks, wtweaks, sharing = bodies
         logs.rowconfigure(0, weight=1)
         logs.columnconfigure(0, weight=1)
         self.log_text = tk.Text(logs, wrap="none", height=16, bg=card, fg=ink,
@@ -234,39 +235,69 @@ class ControlPanel:
         self.controls.extend((start, stopp, restart, full))
         self.field(screen, 1, "Frames per second", "screen_fps",
                    ("1", "5", "10", "15", "24", "30", "60"), host_only=True)
-        self.field(screen, 2, "JPEG quality (10–95)", "screen_quality",
-                   bounds=(10, 95, 5), host_only=True)
-        self.field(screen, 3, "Resolution scale", "screen_scale",
+        self.field(screen, 2, "Codec (UDP hardware path)", "screen_codec",
+                   ("h264", "hevc"), host_only=True)
+        self.field(screen, 3, "Bitrate cap kbps (0 = unlimited)", "screen_kbps",
+                   ("0", "2000", "5000", "8000", "15000", "20000",
+                    "40000", "80000"), host_only=True, editable=True)
+        self.field(screen, 4, "Resolution scale", "screen_scale",
                    ("100%", "75%", "50%", "25%", "10%"), host_only=True)
         self.variables["screen_scale"].set(
             f"{round(_num(self.settings.get('screen_scale', 1.0), 1.0) * 100)}%")
-        self.field(screen, 4, "Bitrate cap (kbps · 0 = unlimited)", "screen_kbps",
-                   bounds=(0, 200000, 500), host_only=True)
-        self.check(screen, 5, "Black && white (grayscale — smaller and faster)",
+        self.field(screen, 5, "Keyframe interval frames (0 = auto)", "screen_gop",
+                   bounds=(0, 600, 15), host_only=True)
+        self.field(screen, 6, "JPEG quality (10–95, fallback only)", "screen_quality",
+                   bounds=(10, 95, 5), host_only=True)
+        self.check(screen, 7, "Black && white (grayscale — smaller and faster)",
                    "screen_gray", host_only=True)
-        self.check(screen, 6, "Show the client's cursor in the feed",
+        self.check(screen, 8, "Show the client's cursor in the feed",
                    "screen_cursor", host_only=True)
-        self.field(screen, 7, "Client monitor (0 = whole desktop)", "screen_monitor",
+        self.field(screen, 9, "Client monitor (0 = whole desktop)", "screen_monitor",
                    bounds=(0, 7, 1), host_only=True)
-        for key in ("screen_fps", "screen_quality", "screen_scale", "screen_kbps",
-                    "screen_gray", "screen_cursor", "screen_monitor"):
-            self.variables[key].trace_add("write", lambda *_: self._screen_push())
+        for key in ("screen_fps", "screen_codec", "screen_quality", "screen_scale",
+                    "screen_kbps", "screen_gop", "screen_gray", "screen_cursor",
+                    "screen_monitor"):
+            self.variables[key].trace_add("write",
+                                          lambda *_: self._screen_push(immediate=False))
+        self._push_after: str | None = None
+        self._last_image = None        # latest full-res PIL frame for re-render
+        # Live stats table — one row of metric label/value pairs above the feed.
+        stats_table = ttk.Frame(screen)
+        stats_table.grid(row=10, column=0, columnspan=2, sticky="ew", pady=(12, 4))
+        self._stat_vars: dict[str, tk.StringVar] = {}
+        for col, (key, caption) in enumerate(
+                (("transport", "transport"), ("size", "resolution"),
+                 ("fps", "frames/s"), ("rate", "rate"),
+                 ("age", "last frame"), ("target", "target"))):
+            ttk.Label(stats_table, text=caption, style="Muted.TLabel"
+                      ).grid(row=0, column=col * 2, sticky="w", padx=(0, 4))
+            var = tk.StringVar(value="—")
+            self._stat_vars[key] = var
+            ttk.Label(stats_table, textvariable=var
+                      ).grid(row=1, column=col * 2, sticky="w", padx=(0, 4))
+            if col:
+                ttk.Separator(stats_table, orient="vertical"
+                              ).grid(row=0, column=col * 2 - 1, rowspan=2,
+                                     sticky="ns", padx=8)
         self.video = tk.Label(screen, bg="#0b0d12", anchor="center",
                               text="No stream — start the host, connect a client,\n"
                                    "then press Start stream",
                               fg="#8b98ad", font=("Segoe UI", 10))
-        self.video.grid(row=8, column=0, columnspan=2, sticky="nsew", pady=12)
-        screen.rowconfigure(8, weight=1)
+        self.video.grid(row=11, column=0, columnspan=2, sticky="nsew", pady=4)
+        self.video.bind("<Configure>", lambda _e: self._render_video())
+        screen.rowconfigure(11, weight=1)
         self.screen_stats = tk.StringVar(value="Screen share is idle")
         stats_label = ttk.Label(screen, textvariable=self.screen_stats,
                                 style="Muted.TLabel", wraplength=760)
-        stats_label.grid(row=9, column=0, columnspan=2, sticky="w")
+        stats_label.grid(row=12, column=0, columnspan=2, sticky="w")
         self._wrap_labels.append(stats_label)
-        self.note(screen, 10, "View-only — the feed never moves your mouse; input still "
+        self.note(screen, 13, "View-only — the feed never moves your mouse; input still "
                   "crosses at the screen edge. The client captures only while streaming "
                   "is on; macOS asks for Screen Recording once, Windows needs nothing.\n\n"
-                  "Tuning: lower quality/scale/fps or grayscale for slow links; raise the "
-                  "bitrate cap for sharpness on LAN.")
+                  "UDP/H.264 is the primary low-latency path (hardware encode on the "
+                  "client, ffmpeg decode here — Parsec-style). JPEG/TCP is the fallback "
+                  "when ffmpeg is unavailable. Bitrate/codec/scale apply on save or "
+                  "within half a second of editing.")
         self._screen_widgets = [w for w in (srow, self.video, stats_label)]
         self._host_widgets.extend(self._screen_widgets)
         self.canvas = tk.Canvas(connection, height=230, bg=card, bd=0,
@@ -431,7 +462,7 @@ class ControlPanel:
                   "Supports text and PNG images; files and rich HTML are not included.")
         self.check(sharing, 3, "Mac-style shortcuts on this PC — Alt sits where Command would: "
                   "Alt+C copy, Alt+Space search, Alt+Q quit, Alt+arrows Home/End, "
-                  "Alt+Shift+3/4 screenshot; Alt+Tab stays unchanged", "mac_mode")
+                  "Alt+Shift+3/4 screenshot; other Alt+keys stay real Alt", "mac_mode")
         self.check(sharing, 4, "Lock the client when this PC locks "
                   "(input is never shared on the lock screen)", "lock_sync")
         self.field(sharing, 5, "Hold physical Esc to STOP (seconds)", "emergency_escape_seconds", bounds=(0.5, 10, 0.1))
@@ -466,6 +497,12 @@ class ControlPanel:
         panel.bind("<Configure>", lambda event: self._fit_text(event.width))
         self._role_changed()
         root.after(100, self.poll)
+        root.after(25, self._screen_tick)   # ~40 Hz video refresh, independent of UI poll
+
+    def _screen_tick(self):
+        if self.session and self.session.screen:
+            self._poll_screen()
+        self.root.after(25, self._screen_tick)
 
     def _fit_text(self, width):
         wrap = max(280, width - 110)
@@ -482,7 +519,8 @@ class ControlPanel:
                 return
             widget = widget.master
 
-    def field(self, parent, row, label, key, values=None, bounds=None, host_only=False):
+    def field(self, parent, row, label, key, values=None, bounds=None,
+              host_only=False, editable=False):
         options = DISPLAY_OPTIONS.get(key, {})
         variable = tk.StringVar(value=options.get(str(self.settings[key]), str(self.settings[key])))
         self.variables[key] = variable
@@ -491,7 +529,8 @@ class ControlPanel:
         control: ttk.Widget
         if values:
             control = ttk.Combobox(parent, textvariable=variable,
-                                  values=[options.get(str(value), str(value)) for value in values], state="readonly")
+                                  values=[options.get(str(value), str(value)) for value in values],
+                                  state="normal" if editable else "readonly")
         elif bounds:
             control = ttk.Spinbox(parent, textvariable=variable, from_=bounds[0], to=bounds[1], increment=bounds[2])
         else:
@@ -747,17 +786,22 @@ class ControlPanel:
             scale = float(str(self.variables["screen_scale"].get()).rstrip("%")) / 100
         except (ValueError, tk.TclError):
             scale = 1.0
+        codec_raw = str(self.variables["screen_codec"].get())
+        codec = {label: value for value, label
+                 in DISPLAY_OPTIONS["screen_codec"].items()}.get(codec_raw, codec_raw)
         return {"enabled": bool(self._screen_on.get()),
                 "fps": number("screen_fps", 15), "quality": number("screen_quality", 60),
                 "scale": scale, "gray": bool(self.variables["screen_gray"].get()),
                 "cursor": bool(self.variables["screen_cursor"].get()),
                 "kbps": number("screen_kbps", 8000),
-                "monitor": int(number("screen_monitor", 0))}
+                "monitor": int(number("screen_monitor", 0)),
+                "codec": codec if codec in ("h264", "hevc") else "h264",
+                "gop": int(number("screen_gop", 0))}
 
     def _screen_preset(self, name: str):
-        values = {"LAN turbo":  ("30", "50", "75%",  "0"),
-                  "Balanced":   ("15", "60", "100%", "8000"),
-                  "Slow link":  ("10", "35", "50%",  "4000")}[name]
+        values = {"LAN turbo":  ("60", "50", "100%", "40000"),
+                  "Balanced":   ("30", "60", "75%",  "15000"),
+                  "Slow link":  ("15", "35", "50%",  "4000")}[name]
         fps, quality, scale, kbps = values
         self.variables["screen_gray"].set(name == "Slow link")
         self.variables["screen_fps"].set(fps)
@@ -785,7 +829,17 @@ class ControlPanel:
         self._fs, self._fs_label = win, label
         label.focus_set()
 
-    def _screen_push(self):
+    def _screen_push(self, immediate=True):
+        """Debounce control pushes — typing a digit must not restart the
+        encoder per keystroke; a settled config lands ~400ms after editing."""
+        if not immediate:
+            if self._push_after is not None:
+                self.root.after_cancel(self._push_after)
+            self._push_after = self.root.after(400, self._screen_push)
+            return
+        if self._push_after is not None:
+            self.root.after_cancel(self._push_after)
+            self._push_after = None
         if self.session and self.session.screen:
             self.session.screen.set_config(self._screen_cfg())
 
@@ -802,19 +856,22 @@ class ControlPanel:
         self._screen_on.set(False)
         self._screen_push()
         self.screen_stats.set("Screen share is idle")
+        self._last_image = None
+        self._photo = None
+        self.video.configure(image="", text="Stream stopped — press Start stream")
 
     def _screen_restart(self):
+        # A fresh cfg push re-launches the client encoder with the new options.
         self._screen_on.set(True)
-        if self.session and self.session.screen:
-            self.session.screen.set_config({"enabled": False})
-            self.root.after(400, self._screen_push)
+        self._screen_push()
 
     def save(self):
         try:
             self.settings = self.collect_settings()
             self.settings["screen_scale"] = self._screen_cfg()["scale"]
             save_json(state_dir() / "settings.json", self.settings)
-            self.status.set("Settings saved • start the host to apply")
+            self._screen_push()
+            self.status.set("Settings saved — applied to the running stream")
         except (ValueError, TypeError, tk.TclError) as exc:
             self.status.set(str(exc))
 
@@ -1123,28 +1180,61 @@ class ControlPanel:
         canvas.create_text(w - 8, 36, anchor="e", text="round-trip",
                            fill="#8b98ad", font=("Segoe UI", 8))
 
+    def _render_video(self):
+        """Draw the latest frame scaled to the panel's width — the feed always
+        fills the view regardless of the encode resolution/scale."""
+        if self._last_image is None or ImageTk is None:
+            return
+        width = max(300, self.video.winfo_width())
+        image = self._last_image.copy()
+        image.thumbnail((width, width * 4))   # width-bound, aspect preserved
+        photo = ImageTk.PhotoImage(image)
+        self._photo = photo  # keep a reference or Tk drops the image
+        self.video.configure(image=photo, text="")
+
     def _poll_screen(self):
         if not self.session or not self.session.screen:
+            for var in self._stat_vars.values():
+                var.set("—")
             return
         image, stats = self.session.screen.poll_frame()
+        vars_ = self._stat_vars
         if image is not None and ImageTk is not None:
+            self._last_image = image
             if self._fs_label is not None:
                 fs_image = image.copy()
                 fs_image.thumbnail((self.root.winfo_screenwidth(),
                                     self.root.winfo_screenheight()))
                 self._fs_photo = ImageTk.PhotoImage(fs_image)
                 self._fs_label.configure(image=self._fs_photo)
-            image.thumbnail((900, 540))
-            photo = ImageTk.PhotoImage(image)
-            self._photo = photo  # keep a reference or Tk drops the image
-            self.video.configure(image=photo, text="")
+            self._render_video()
+        enabled = self._screen_on.get()
+        if not enabled:
+            # Stopped stream → no stale feed on screen.
+            if self._last_image is not None or self._photo is not None:
+                self._last_image = None
+                self._photo = None
+                self.video.configure(image="", text="Stream stopped — press Start stream")
+        vars_["transport"].set(stats.get("transport") or "—")
         if stats.get("size"):
             w, h = stats["size"]
-            self.screen_stats.set(f"{w}×{h} @ {stats['fps']:.0f} fps · "
-                                  f"{stats['mbps']:.1f} Mbps")
+            vars_["size"].set(f"{w}×{h}")
+        vars_["fps"].set(f"{stats['fps']:.0f}" if stats.get("connected") else "—")
+        if stats.get("transport", "").startswith("UDP"):
+            vars_["rate"].set(f"~{self._screen_cfg()['kbps']:.0f} kbps target")
+        elif stats.get("mbps"):
+            vars_["rate"].set(f"{stats['mbps'] * 1000:.0f} kbps")
+        else:
+            vars_["rate"].set("—")
+        age = stats.get("age_ms")
+        vars_["age"].set(f"{age:.0f} ms ago" if age is not None else "—")
+        cfg = self._screen_cfg()
+        vars_["target"].set(f"{int(cfg['fps'])} fps · {cfg['codec'].upper()}")
+        if stats.get("size"):
+            self.screen_stats.set(f"{stats['transport']} — decoding live")
         elif stats.get("connected"):
             self.screen_stats.set("Screen channel connected — press Start stream")
-        elif self._screen_on.get():
+        elif enabled:
             self.screen_stats.set("Waiting for the client's screen channel…")
 
     def poll(self):
@@ -1160,8 +1250,6 @@ class ControlPanel:
                 self._draw_latency()
             if self.session.thread and not self.session.thread.is_alive():
                 self.set_running(False)
-        if self.session and self.session.screen:
-            self._poll_screen()
         if self.client.active:
             self.stats.set("Client connected to host — input is controlled remotely")
         self.root.after(100, self.poll)
