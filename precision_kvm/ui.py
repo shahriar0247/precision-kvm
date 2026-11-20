@@ -281,9 +281,12 @@ class ControlPanel:
                     "40000", "80000"), host_only=True, editable=True)
         self.field(out_box, 1, "Display fit", "screen_fit",
                    ("fill", "width", "contain"), host_only=True)
+        self.check(out_box, 2, "Show stream in a dedicated player window (ffplay/mpv)",
+                   "screen_player", host_only=True)
         for key in ("screen_fps", "screen_codec", "screen_quality", "screen_scale",
                     "screen_kbps", "screen_gop", "screen_gray", "screen_cursor",
-                    "screen_monitor", "screen_cap_res", "screen_preset"):
+                    "screen_monitor", "screen_cap_res", "screen_preset",
+                    "screen_player"):
             self.variables[key].trace_add("write",
                                           lambda *_: self._screen_push(immediate=False))
         self.variables["screen_fit"].trace_add(
@@ -838,6 +841,7 @@ class ControlPanel:
                 "gop": int(number("screen_gop", 0)),
                 "cap_res": str(self.variables["screen_cap_res"].get() or "native"),
                 "preset": str(self.variables["screen_preset"].get() or "ultrafast"),
+                "player": bool(self.variables["screen_player"].get()),
                 "viewer_w": vw, "viewer_h": vh}
 
     def _screen_preset(self, name: str):

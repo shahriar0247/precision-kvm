@@ -480,10 +480,16 @@ class LinuxClipboard:
             return
         try:
             watch.wait(0.2)
-            self._watch_dead = True   # unsupported compositor — exited at once
-            return
         except subprocess.TimeoutExpired:
             self._watch = watch
+        else:
+            self._watch_dead = True   # unsupported compositor — exited at once
+            # GNOME makes every wl-paste spawn a focus-stealing toplevel, so
+            # polling it flickers the user's windows — the XWayland clipboard
+            # via xclip maps no windows and sees the same content.
+            if os.environ.get("DISPLAY") and shutil.which("xclip"):
+                self._mode = "x11"
+            return
 
         def count(stream):
             for _line in stream:

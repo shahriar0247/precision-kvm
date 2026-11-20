@@ -28,7 +28,8 @@ SCREEN_MAX_FRAME = 8 * 1024 * 1024
 DEFAULT_CFG = {"enabled": False, "fps": 15, "quality": 60, "scale": 1.0,
                "gray": False, "kbps": 8000, "monitor": 0, "cursor": True,
                "codec": "h264", "gop": 0, "cap_res": "native",
-               "preset": "ultrafast", "viewer_w": 0, "viewer_h": 0}
+               "preset": "ultrafast", "viewer_w": 0, "viewer_h": 0,
+               "player": False}
 
 _CAP_RES = re.compile(r"(native|viewer|\d{3,4}|\d{2,5}x\d{2,5})")
 _ENCODER_PRESETS = ("ultrafast", "superfast", "veryfast", "faster",
@@ -95,6 +96,7 @@ def normalize_cfg(values: dict) -> dict:
     cfg["enabled"] = bool(cfg["enabled"])
     cfg["gray"] = bool(cfg["gray"])
     cfg["cursor"] = bool(cfg["cursor"])
+    cfg["player"] = bool(cfg["player"])
     cfg["fps"] = min(60, max(1, int(_num(cfg["fps"], DEFAULT_CFG["fps"]))))
     cfg["quality"] = min(95, max(10, int(_num(cfg["quality"], DEFAULT_CFG["quality"]))))
     cfg["scale"] = min(1.0, max(0.1, _num(cfg["scale"], DEFAULT_CFG["scale"])))
@@ -182,6 +184,7 @@ class ScreenShareServer:
         self._fps_count = 0
         self._fps = 0.0
         self._decoder = None          # ffmpeg subprocess while UDP plane is live
+        self._player = None           # ffplay/mpv window when player mode is on
         self._transport = "—"         # "UDP/H.264" | "JPEG/TCP" once frames flow
         self._last_frame_at = 0.0
 
@@ -201,6 +204,8 @@ class ScreenShareServer:
         self.stopped.set()
         video_udp.reap(self._decoder)
         self._decoder = None
+        video_udp.reap(self._player)
+        self._player = None
         if self.channel:
             self.channel.close()
         if self.listener:
@@ -217,6 +222,23 @@ class ScreenShareServer:
                 channel.send({"type": "screen_cfg", **self.cfg})
             except (OSError, EOFError, ProtocolError):
                 pass
+        self._sync_player()
+
+    def _sync_player(self):
+        """One consumer owns the UDP port: a native player window, or the
+        PPM decoder feeding the Tk panel — never both."""
+        want = (self.cfg["enabled"] and self.cfg["player"]
+                and self.channel is not None
+                and video_udp.player_path() is not None)
+        if want and self._player is None:
+            video_udp.reap(self._decoder)   # free the port for the player
+            self._decoder = None
+            self._player = video_udp.launch(video_udp.player_command(self.port))
+            if self._player:
+                self._transport = f"UDP/{self.cfg['codec'].upper()} player"
+        elif not want and self._player is not None:
+            video_udp.reap(self._player)
+            self._player = None
 
     def poll_frame(self):
         """Return (image, stats) once per new frame, else (None, stats)."""
@@ -273,8 +295,10 @@ class ScreenShareServer:
         window_bytes = 0
         window_start = time.monotonic()
         if udp:
-            threading.Thread(target=self._udp_decode, daemon=True,
-                             name="kvm-screen-dec").start()
+            self._sync_player()
+            if self._player is None:
+                threading.Thread(target=self._udp_decode, daemon=True,
+                                 name="kvm-screen-dec").start()
         try:
             while not self.stopped.is_set():
                 try:
@@ -302,6 +326,8 @@ class ScreenShareServer:
         finally:
             video_udp.reap(self._decoder)
             self._decoder = None
+            video_udp.reap(self._player)
+            self._player = None
 
     def _udp_decode(self):
         """ffmpeg demuxes UDP MPEG-TS → PPM frames → the viewer's poll_frame."""

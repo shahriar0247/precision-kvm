@@ -107,8 +107,11 @@ class LinuxCapture:
         self._press_t = 0.0
         self._grace_until = 0.0
         self._portal = None          # bridge subprocess while armed
+        self._portal_possible = False  # portal can arm — evdev edges stay off
+        self._portal_rearms = 0
         self._portal_ids: dict = {}
         self._portal_aid: int | None = None
+        self._debug = bool(os.environ.get("PRECISIONKVM_DEBUG"))
         self._abs_last: dict[int, dict[int, int]] = {}
         self._devices: list[EvdevDevice] = []
         self._keyboards: list[EvdevDevice] = []
@@ -233,11 +236,22 @@ class LinuxCapture:
             self._fd_map = {d.fd: d for d in self._keyboards + self._pointers}
             self._poller = selector(list(self._fd_map))
             self._ready.set()
-            # Arming the portal can take seconds (consent dialog, session
-            # negotiation) — run it beside the poll loop and swap it in when
-            # READY arrives. Until then the evdev pressure model covers edges.
-            threading.Thread(target=self._portal_arm, args=(bounds,),
-                             daemon=True, name="kvm-portal-arm").start()
+            if self._debug:
+                for device in self._fd_map.values():
+                    print(f"[kvm-debug] device fd={device.fd} "
+                          f"name={device.name!r} pointer={device.is_pointer} "
+                          f"keyboard={device.is_keyboard} rels={sorted(device.rels)} "
+                          f"abss={sorted(device.abss)}", flush=True)
+            # One edge mechanism only: when the compositor's InputCapture
+            # portal can arm, the evdev pressure model never crosses — so
+            # nothing can reach the peer before the consent dialog is
+            # answered. evdev edges only exist where the portal cannot run.
+            if self._portal_capable():
+                self._portal_possible = True
+                # Arming can take seconds (consent dialog, negotiation) —
+                # run it beside the poll loop and swap in on READY.
+                threading.Thread(target=self._portal_arm, args=(bounds,),
+                                 daemon=True, name="kvm-portal-arm").start()
             while not self._stopping.is_set():
                 for fd, _mask in self._poller.poll(200):
                     device = self._fd_map.get(fd)
@@ -284,6 +298,10 @@ class LinuxCapture:
             # Hybrids emitting REL+ABS for one motion would double-feed the
             # virtual cursor — REL wins; ABS only serves REL-less devices.
             self._abs(device, code, value)
+        if self._debug and (ev_type == EV_ABS or code not in (REL_X, REL_Y)):
+            print(f"[kvm-debug] {'abs' if ev_type == EV_ABS else 'key' if ev_type == EV_KEY else 'rel'} "
+                  f"dev={device.name!r} code={code} value={value} active={self.active}",
+                  flush=True)
 
     def _key(self, code: int, down: bool):
         key_id = evdev_key_id(code)
@@ -354,8 +372,8 @@ class LinuxCapture:
             self._move_inactive(code, delta)
 
     def _move_inactive(self, axis: int, delta: float):
-        if self._portal is not None:
-            return  # compositor barriers report real crossings — no guessing
+        if self._portal is not None or self._portal_possible:
+            return  # compositor barriers own edges — armed, arming, or re-arming
         if (self._stopping.is_set() or not self.peer_connected
                 or self._keys or self._buttons or self.active):
             self._press_side, self._press_amt = None, 0.0
@@ -419,21 +437,28 @@ class LinuxCapture:
             proc.kill()
             return
         self._portal = proc
+        self._portal_rearms = 0
 
-    def _portal_start(self, bounds):
-        """Arm compositor barriers via the portal bridge, if it can run."""
+    def _portal_capable(self):
+        """A python3 with GI plus the bridge script — the portal can arm.
+        Returns the interpreter path or None."""
         if not os.environ.get("WAYLAND_DISPLAY") or not _BRIDGE.exists():
-            return None
-        peers = self._peer_map(self._monitors or [(0, 0, 1920, 1080)])
-        specs, self._portal_ids = portal_barriers(peers, bounds)
-        if not specs:
             return None
         for py in ("/usr/bin/python3", "/usr/local/bin/python3"):
             if (Path(py).exists()
                     and subprocess.run([py, "-c", "import gi"],
                                        capture_output=True).returncode == 0):
-                break
-        else:
+                return py
+        return None
+
+    def _portal_start(self, bounds):
+        """Arm compositor barriers via the portal bridge, if it can run."""
+        peers = self._peer_map(self._monitors or [(0, 0, 1920, 1080)])
+        specs, self._portal_ids = portal_barriers(peers, bounds)
+        if not specs:
+            return None
+        py = self._portal_capable()
+        if py is None:
             return None
         try:
             proc = subprocess.Popen(
@@ -478,7 +503,21 @@ class LinuxCapture:
                     pass
             elif parts and parts[0] in ("CLOSED", "ERROR"):
                 break
-        self._portal = None  # bridge died — evdev pressure model resumes
+        self._portal = None  # bridge died — re-arm; evdev edges stay off
+        if self._portal_possible and not self._stopping.is_set():
+            threading.Thread(target=self._portal_rearm, daemon=True,
+                             name="kvm-portal-rearm").start()
+
+    def _portal_rearm(self):
+        time.sleep(1.0)
+        if self._stopping.is_set() or self._portal is not None:
+            return
+        if self._portal_rearms >= 3:
+            self.error = "Compositor input-capture unavailable — edge crossings disabled"
+            return
+        self._portal_rearms += 1
+        self._portal_arm(geometry.union_bounds(
+            self._monitors or [(0, 0, 1920, 1080)]))
 
     def _portal_release(self, aid, x=None, y=None):
         proc = self._portal

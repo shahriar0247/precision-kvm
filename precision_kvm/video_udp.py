@@ -145,6 +145,27 @@ def decoder_command(port: int, ffmpeg: str) -> list[str]:
             "-f", "image2pipe", "-vcodec", "ppm", "-"]
 
 
+def player_path() -> str | None:
+    """A native player that can bind the UDP port directly — an SDL window
+    with real buffering/hardware decode beats the PPM → PIL → Tk detour."""
+    for name in ("ffplay", "mpv"):
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
+
+def player_command(port: int) -> list[str]:
+    player = player_path()
+    url = f"udp://0.0.0.0:{port}?fifo_size=1000000&overrun_nonfatal=1"
+    if player and player.endswith("mpv"):
+        return [player, "--profile=low-latency", "--no-cache", "--untimed",
+                "--title=PrecisionKVM", url]
+    return [player or "ffplay", "-fflags", "nobuffer", "-flags", "low_delay",
+            "-framedrop", "-fast", "-infbuf", "-an", "-sn",
+            "-window_title", "PrecisionKVM", url]
+
+
 def read_ppm(stream) -> tuple[int, int, bytes] | None:
     """Parse one P6 frame from an image2pipe stream; None on EOF/garbage."""
     magic = stream.readline()
@@ -202,4 +223,5 @@ def reap(proc: subprocess.Popen | None) -> None:
 
 
 __all__ = ["ffmpeg_path", "can_encode", "can_decode", "encoder_command",
-           "decoder_command", "read_ppm", "launch", "reap", "Callable"]
+           "decoder_command", "read_ppm", "launch", "reap", "player_path",
+           "player_command", "Callable"]

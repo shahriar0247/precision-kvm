@@ -42,6 +42,7 @@ def load_settings() -> dict:
                 "keymap_preset": "option_cmd", "keymap": {}, "gesture_bridge": True,
                 "native_touchpad": False,
                 "clipboard_enabled": True, "clipboard_max_mb": 128,
+                "screen_player": True,
                 "mac_mode": False, "lock_sync": True,
                 "peer_align": 0.5, "peer_span": 0.6,
                 "peers": {}, "peer_size": [1920, 1080],
