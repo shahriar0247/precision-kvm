@@ -96,6 +96,9 @@ def test_injector_activate_enters_on_far_edge_and_slams(monkeypatch):
 
 
 def test_injector_move_emits_deltas_and_detects_return(monkeypatch):
+    from precision_kvm import linux_inject as inject_module
+    clock = [0.0]
+    monkeypatch.setattr(inject_module.time, "monotonic", lambda: clock[0])
     injector, device, returned = _injector(monkeypatch)
     _activate(injector, side="left")
     device.calls.clear()
@@ -104,8 +107,13 @@ def test_injector_move_emits_deltas_and_detects_return(monkeypatch):
     assert ("rel", linux_input.REL_X, -10) in device.calls
     assert ("rel", linux_input.REL_Y, -5) in device.calls
     assert not returned
-    # Crossing back out through the right edge returns control.
+    # A lone jolt — however huge — is a touchpad brush, not a return.
     injector.handle({"type": "move", "dx": 5000, "dy": 0})
+    assert not returned
+    # Sustained outward pressure over >=120ms returns control.
+    for _ in range(6):
+        clock[0] += 0.03
+        injector.handle({"type": "move", "dx": 100, "dy": 0})
     assert len(returned) == 1
     assert returned[0]["type"] == "return"
     assert returned[0]["normalized_y"] == pytest.approx(0.5, abs=0.01)
@@ -276,6 +284,8 @@ def test_injector_return_requires_sustained_edge_push(monkeypatch):
         def syn(self): pass
         def emit(self, *args): pass
 
+    clock = [0.0]
+    monkeypatch.setattr(inject_module.time, "monotonic", lambda: clock[0])
     injector = LinuxInjector(on_return=returns.append, device=FakeDevice())
     injector.handle({"type": "activate", "side": "left", "normalized_y": 0.5})
     assert injector.active
@@ -283,8 +293,15 @@ def test_injector_return_requires_sustained_edge_push(monkeypatch):
     for _ in range(10):
         injector.handle({"type": "move", "dx": 2, "dy": 0})
     assert not returns
-    for _ in range(10):
-        injector.handle({"type": "move", "dx": 30, "dy": 0})
+    # A palm brush: huge deltas in an instant burst — the per-move cap and
+    # the elapsed-time gate keep it from ever bouncing control back.
+    for _ in range(3):
+        injector.handle({"type": "move", "dx": 2000, "dy": 0})
+    assert not returns
+    # Deliberate, sustained pressure past the edge does return.
+    for _ in range(6):
+        clock[0] += 0.03
+        injector.handle({"type": "move", "dx": 50, "dy": 0})
     assert returns and returns[0]["type"] == "return"
 
 

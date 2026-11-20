@@ -492,7 +492,17 @@ def run_client(config: dict, connect_timeout=3, stop_event=None, status=print,
                config_path=None):
     if sys.platform == "darwin":
         from .mac import MacInjector as Injector
-        if not Injector.accessibility_available(prompt=True):
+        # Poll rather than fail instantly: TCC can report a fresh grant a beat
+        # late, and an instant exit under launchd means a respawn loop that
+        # keeps dropping the link — dropping the user back to the host.
+        trusted = Injector.accessibility_available(prompt=True)
+        for _ in range(15):
+            if trusted:
+                break
+            if stop_event is not None and stop_event.wait(1.0):
+                return
+            trusted = Injector.accessibility_available()
+        if not trusted:
             raise RuntimeError("Grant Accessibility access to this Python executable/Terminal in "
                                "System Settings > Privacy & Security > Accessibility, then reconnect")
     elif sys.platform == "linux":

@@ -55,17 +55,27 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(self.q.events,[])
 
     def test_left_mac_enters_at_right_and_returns(self):
-        self.activate()
-        self.assertEqual(self.injector.x,98)
-        self.injector.handle({"type":"move","dx":-50,"dy":0})
-        self.assertEqual(self.injector.x,48)
-        # A small poke past the edge must not bounce back — only travel does.
-        self.injector.handle({"type":"move","dx":60,"dy":0})
-        self.assertTrue(self.injector.active)
-        self.injector.handle({"type":"move","dx":-99,"dy":0})
-        self.injector.handle({"type":"move","dx":300,"dy":0})
-        self.assertFalse(self.injector.active)
-        self.assertEqual(self.returns,[{"type":"return","normalized_y":0.5}])
+        from unittest.mock import patch
+        from precision_kvm import mac as mac_module
+        clock = [0.0]
+        with patch.object(mac_module.time, "monotonic", lambda: clock[0]):
+            self.activate()
+            self.assertEqual(self.injector.x,98)
+            self.injector.handle({"type":"move","dx":-50,"dy":0})
+            self.assertEqual(self.injector.x,48)
+            # A small poke past the edge must not bounce back — only travel does.
+            self.injector.handle({"type":"move","dx":60,"dy":0})
+            self.assertTrue(self.injector.active)
+            self.injector.handle({"type":"move","dx":-99,"dy":0})
+            # A lone giant jolt is a touchpad brush, not a deliberate return.
+            self.injector.handle({"type":"move","dx":300,"dy":0})
+            self.assertTrue(self.injector.active)
+            # Sustained outward pressure over >=120ms does return.
+            for _ in range(6):
+                clock[0] += 0.03
+                self.injector.handle({"type":"move","dx":50,"dy":0})
+            self.assertFalse(self.injector.active)
+            self.assertEqual(self.returns,[{"type":"return","normalized_y":0.5}])
 
     def test_drag_does_not_return_and_releases_on_disconnect(self):
         self.activate()
@@ -113,12 +123,20 @@ class MappingTests(unittest.TestCase):
         self.assertFalse(self.injector.media)
 
     def test_top_monitor_return(self):
-        self.injector.handle({"type":"activate","side":"top","normalized_x":0.25})
-        self.assertEqual((self.injector.x,self.injector.y),(24.75,98))
-        self.injector.handle({"type":"move","dx":0,"dy":3})
-        self.assertEqual(self.returns,[])  # a poke past the edge is not a return
-        self.injector.handle({"type":"move","dx":0,"dy":300})
-        self.assertEqual(self.returns,[{"type":"return","normalized_y":0.25,"normalized_x":0.25}])
+        from unittest.mock import patch
+        from precision_kvm import mac as mac_module
+        clock = [0.0]
+        with patch.object(mac_module.time, "monotonic", lambda: clock[0]):
+            self.injector.handle({"type":"activate","side":"top","normalized_x":0.25})
+            self.assertEqual((self.injector.x,self.injector.y),(24.75,98))
+            self.injector.handle({"type":"move","dx":0,"dy":3})
+            self.assertEqual(self.returns,[])  # a poke past the edge is not a return
+            self.injector.handle({"type":"move","dx":0,"dy":300})
+            self.assertEqual(self.returns,[])  # nor an instant brush
+            for _ in range(6):
+                clock[0] += 0.03
+                self.injector.handle({"type":"move","dx":0,"dy":50})
+            self.assertEqual(self.returns,[{"type":"return","normalized_y":0.25,"normalized_x":0.25}])
 
     def test_gain_fractional_motion_scroll_and_modifier_swap(self):
         self.injector.handle({"type":"activate","gain":0.25,"scroll_gain":2,"swap_ctrl_cmd":True})

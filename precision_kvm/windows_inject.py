@@ -69,6 +69,7 @@ class WindowsInjector:
         self.x = self.y = 0.0
         self._press = 0.0            # accumulated push on the return edge
         self._press_t = 0.0
+        self._press_first = 0.0      # when the current push burst began
         self.left = self.top = self.width = self.height = 0
         self.refresh_bounds()
 
@@ -151,18 +152,29 @@ class WindowsInjector:
         nx, ny = self.x + dx, self.y + dy
         # Returning takes real travel past the return edge — entry parks the
         # cursor on it, so a lone jitter must not bounce back.
-        if self.side == "left":      overshoot = nx - (self.left + self.width - 1)
-        elif self.side == "right":   overshoot = self.left - nx
-        elif self.side == "top":     overshoot = ny - (self.top + self.height - 1)
-        else:                        overshoot = self.top - ny
+        if self.side == "left":
+            overshoot = nx - (self.left + self.width - 1)
+        elif self.side == "right":
+            overshoot = self.left - nx
+        elif self.side == "top":
+            overshoot = ny - (self.top + self.height - 1)
+        else:
+            overshoot = self.top - ny
         now = time.monotonic()
         if overshoot > 0 and not self.buttons:
-            self._press = (self._press + overshoot
-                           if now - self._press_t <= 0.4 else overshoot)
+            # Sustained-push gate: a palm/brush across the touchpad emits a
+            # few large deltas in <50ms — capping each move's contribution
+            # means a single burst can never reach RETURN_PUSH alone, and
+            # the elapsed window requires continuous outward pressure.
+            if self._press > 0 and now - self._press_t <= 0.4:
+                self._press += min(overshoot, 60)
+            else:
+                self._press, self._press_first = min(overshoot, 60), now
         else:
             self._press = 0.0
         self._press_t = now
-        if self._press >= RETURN_PUSH:
+        if (self._press >= RETURN_PUSH
+                and now - self._press_first >= 0.12):
             self._press = 0.0
             fraction = ((self.y - self.top) / max(1, self.height - 1)
                         if self.side in ("left", "right")
@@ -223,6 +235,7 @@ class WindowsInjector:
     def release_all(self):
         self.active = False
         self._press = 0.0
+        self._press_first = 0.0
         if self._mouse_params is not None:
             params = (ctypes.c_int * 3)(*self._mouse_params)
             user.SystemParametersInfoW(SPI_SETMOUSE, 0, ctypes.byref(params), 0)
