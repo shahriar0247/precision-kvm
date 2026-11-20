@@ -457,6 +457,7 @@ class LinuxClipboard:
         self._rev_hash: str | None = None
         self._rev_lock = threading.Lock()
         self._watch: subprocess.Popen | None = None
+        self._watch_dead = False
         if self._mode == "wayland":
             self._spawn_watch()
 
@@ -466,36 +467,48 @@ class LinuxClipboard:
             self._watch = None
 
     def _spawn_watch(self):
-        """`wl-paste --watch` prints once per selection change -> our counter."""
+        """`wl-paste --watch` prints once per selection change -> our counter.
+        Exits instantly on compositors without wlr-data-control (GNOME) —
+        detect that and fall back to offer hashing instead of respawning
+        a dead process on every poll."""
         try:
-            self._watch = subprocess.Popen(
+            watch = subprocess.Popen(
                 ["wl-paste", "--watch", "echo", "."],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         except OSError:
-            self._watch = None
+            self._watch_dead = True
             return
+        try:
+            watch.wait(0.2)
+            self._watch_dead = True   # unsupported compositor — exited at once
+            return
+        except subprocess.TimeoutExpired:
+            self._watch = watch
 
         def count(stream):
             for _line in stream:
                 with self._rev_lock:
                     self._rev += 1
 
-        threading.Thread(target=count, args=(self._watch.stdout,),
+        threading.Thread(target=count, args=(watch.stdout,),
                          name="kvm-clipboard-watch", daemon=True).start()
 
     def revision(self):
-        if self._mode == "wayland":
+        if self._mode == "wayland" and not self._watch_dead:
             if self._watch is None or self._watch.poll() is not None:
                 self._spawn_watch()
             with self._rev_lock:
                 return self._rev
-        # X11 has no cheap change counter via xclip: hash the offered types,
-        # plus small text content so same-type copies still register. Pure
+        # Hash the offered types plus small text content so same-type
+        # copies still register. Serves X11 (no change counter via xclip)
+        # and Wayland compositors without wlr-data-control (GNOME). Pure
         # image-to-image changes can be missed on this fallback only.
-        offers = self._clip_out(["-t", "TARGETS"]) or b""
+        offers = (self._clip_out(["-l"]) if self._mode == "wayland"
+                else self._clip_out(["-t", "TARGETS"])) or b""
         probe = bytearray(offers)
         if b"text" in offers:
-            probe += self._clip_out(["-t", TEXT], limit=1 << 20) or b""
+            text_args = ["-n", "-t", TEXT] if self._mode == "wayland" else ["-t", TEXT]
+            probe += self._clip_out(text_args, limit=1 << 20) or b""
         digest = hashlib.sha256(bytes(probe)).hexdigest()
         with self._rev_lock:
             if digest != self._rev_hash:

@@ -424,7 +424,7 @@ def test_unreadable_change_is_reported_once_per_revision():
     assert bridge.changed() is None
     assert bridge.changed() is None
     assert notes == ["Clipboard changed but nothing readable was found "
-                     "(empty copy, files, or blocked access)"]
+                     "(empty copy, files, or macOS pasteboard consent)"]
 
 
 def test_denied_pasteboard_read_is_reported_once_per_revision():
