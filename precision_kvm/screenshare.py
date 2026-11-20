@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import socket
+import tempfile
 import threading
 import time
 from collections import deque
@@ -17,6 +18,7 @@ from typing import Callable
 
 from .transport import (FramedSocket, ProtocolError, TLSListener, PlainListener,
                         authenticate, connect)
+from . import video_udp
 
 SCREEN_PORT_OFFSET = 4
 SCREEN_MAX_FRAME = 8 * 1024 * 1024
@@ -162,6 +164,7 @@ class ScreenShareServer:
         self._fps_start = 0.0
         self._fps_count = 0
         self._fps = 0.0
+        self._decoder = None          # ffmpeg subprocess while UDP plane is live
 
     @property
     def client_connected(self) -> bool:
@@ -177,6 +180,8 @@ class ScreenShareServer:
 
     def stop(self):
         self.stopped.set()
+        video_udp.reap(self._decoder)
+        self._decoder = None
         if self.channel:
             self.channel.close()
         if self.listener:
@@ -219,9 +224,12 @@ class ScreenShareServer:
                     self.channel = self.listener.accept()
                     self.channel.max_frame = SCREEN_MAX_FRAME
                     authenticate(self.channel, self.token, server=True)
-                    self.channel.send({"type": "screen_cfg", **self.cfg})
+                    offer_udp = video_udp.can_decode()
+                    self.channel.send({"type": "screen_cfg", **self.cfg,
+                                       "video_udp": offer_udp,
+                                       "udp_port": self.port})
                     self.status("Screen share client connected")
-                    self._serve(self.channel)
+                    self._serve(self.channel, udp=offer_udp)
                 except socket.timeout:
                     continue
                 except (OSError, EOFError, ProtocolError, ValueError):
@@ -238,30 +246,67 @@ class ScreenShareServer:
             if self.listener:
                 self.listener.close()
 
-    def _serve(self, channel: FramedSocket):
+    def _serve(self, channel: FramedSocket, udp: bool = False):
         window_bytes = 0
         window_start = time.monotonic()
-        while not self.stopped.is_set():
-            try:
-                payload = channel.recv_binary()
-            except socket.timeout:
-                continue  # idle stream — the socket deadline is not a drop
-            image = jpeg_decode(payload)
-            now = time.monotonic()
-            self._received += 1
-            window_bytes += len(payload)
-            if now - self._fps_start >= 1.0:
-                self._fps = self._fps_count / max(0.001, now - self._fps_start)
-                self._fps_count = 0
-                self._fps_start = now
-                window_bytes = 0
-                window_start = now
-            self._fps_count += 1
-            mbps = window_bytes * 8 / 1e6 / max(0.001, now - window_start)
-            with self._frame_lock:
-                self._latest = (image, {"size": (image.width, image.height),
-                                        "mbps": mbps, "fps": self._fps})
-            self._new.set()
+        if udp:
+            threading.Thread(target=self._udp_decode, daemon=True,
+                             name="kvm-screen-dec").start()
+        try:
+            while not self.stopped.is_set():
+                try:
+                    payload = channel.recv_binary()
+                except socket.timeout:
+                    continue  # idle stream — the socket deadline is not a drop
+                image = jpeg_decode(payload)
+                now = time.monotonic()
+                self._received += 1
+                window_bytes += len(payload)
+                if now - self._fps_start >= 1.0:
+                    self._fps = self._fps_count / max(0.001, now - self._fps_start)
+                    self._fps_count = 0
+                    self._fps_start = now
+                    window_bytes = 0
+                    window_start = now
+                self._fps_count += 1
+                mbps = window_bytes * 8 / 1e6 / max(0.001, now - window_start)
+                with self._frame_lock:
+                    self._latest = (image, {"size": (image.width, image.height),
+                                            "mbps": mbps, "fps": self._fps})
+                self._new.set()
+        finally:
+            video_udp.reap(self._decoder)
+            self._decoder = None
+
+    def _udp_decode(self):
+        """ffmpeg demuxes UDP MPEG-TS → PPM frames → the viewer's poll_frame."""
+        ffmpeg = video_udp.ffmpeg_path()
+        if not ffmpeg:
+            return
+        with tempfile.TemporaryFile() as errlog:
+            proc = video_udp.launch(
+                video_udp.decoder_command(self.port, ffmpeg), errlog)
+            self._decoder = proc
+            if proc is None or proc.stdout is None:
+                return
+            while not self.stopped.is_set() and proc.poll() is None:
+                frame = video_udp.read_ppm(proc.stdout)
+                if frame is None:
+                    continue
+                width, height, data = frame
+                from PIL import Image
+                image = Image.frombytes("RGB", (width, height), data)
+                now = time.monotonic()
+                self._received += 1
+                self._fps_count += 1
+                if now - self._fps_start >= 1.0:
+                    self._fps = self._fps_count / max(0.001, now - self._fps_start)
+                    self._fps_count = 0
+                    self._fps_start = now
+                with self._frame_lock:
+                    self._latest = (image, {"size": (width, height),
+                                            "mbps": 0.0, "fps": self._fps})
+                self._new.set()
 
 
 class ScreenShareClient:
@@ -278,6 +323,8 @@ class ScreenShareClient:
         self._cfg = normalize_cfg({})
         self._cfg_lock = threading.Lock()
         self._cfg_new = threading.Event()
+        self._udp_offer: int | None = None   # UDP port the server listens on
+        self._encoder = None                 # ffmpeg subprocess while streaming
 
     def start(self):
         if self.thread and self.thread.is_alive():
@@ -289,6 +336,8 @@ class ScreenShareClient:
 
     def stop(self):
         self.stopped.set()
+        video_udp.reap(self._encoder)
+        self._encoder = None
         if self.channel:
             self.channel.close()
         if self.thread and self.thread is not threading.current_thread():
@@ -329,6 +378,8 @@ class ScreenShareClient:
                 except socket.timeout:
                     continue  # quiet control channel — not a disconnect
                 if message.get("type") == "screen_cfg":
+                    if message.get("video_udp") and message.get("udp_port"):
+                        self._udp_offer = int(message["udp_port"])
                     with self._cfg_lock:
                         self._cfg = normalize_cfg(
                             {k: v for k, v in message.items()})
@@ -350,10 +401,32 @@ class ScreenShareClient:
                 with self._cfg_lock:
                     cfg = dict(self._cfg)
                 if not cfg["enabled"]:
+                    video_udp.reap(self._encoder)
+                    self._encoder = None
                     if sct is not None:
                         sct.close()
                         sct = None
                     self._cfg_new.wait(0.5)
+                    self._cfg_new.clear()
+                    continue
+                if self._udp_offer and video_udp.can_encode():
+                    # HW-encode path — Parsec-style H.264 over UDP; ffmpeg does
+                    # the capture+encode+datagram work in one subprocess.
+                    if self._encoder is None or self._encoder.poll() is not None:
+                        video_udp.reap(self._encoder)
+                        ffmpeg = video_udp.ffmpeg_path()
+                        cmd = video_udp.encoder_command(
+                            cfg, self.config["host"], self._udp_offer, ffmpeg)
+                        self._encoder = video_udp.launch(cmd)
+                        if self._encoder is None:
+                            self.status("Screen: hardware encoder failed to start")
+                            self.stopped.wait(2.0)
+                        else:
+                            self.status("Screen: streaming H.264 over UDP (hardware encode)")
+                    # Any control change restarts the encoder with new opts.
+                    if self._cfg_new.wait(0.5):
+                        video_udp.reap(self._encoder)
+                        self._encoder = None
                     self._cfg_new.clear()
                     continue
                 if sct is None:
