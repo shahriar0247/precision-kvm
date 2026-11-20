@@ -870,6 +870,14 @@ class ControlPanel:
         self._fs, self._fs_label = win, label
         label.focus_set()
 
+    def _screen_push_startup(self, tries=0):
+        """The screen server is created inside the session thread; push the
+        persisted cfg once it exists instead of racing its startup."""
+        if self.session and self.session.screen:
+            self._screen_push()
+        elif self.session and tries < 20:
+            self.root.after(500, self._screen_push_startup, tries + 1)
+
     def _screen_push(self, immediate=True):
         """Debounce control pushes — typing a digit must not restart the
         encoder per keystroke; a settled config lands ~400ms after editing."""
@@ -1156,6 +1164,9 @@ class ControlPanel:
             self.session.start()
             if settings["ssh_target"]:
                 threading.Thread(target=self.session.connect_mac, daemon=True, name="kvm-ssh").start()
+            # Restore the persisted stream state — a host restart shouldn't
+            # need a fresh Start press for the feed to resume.
+            self.root.after(500, self._screen_push_startup)
             self.set_running(True)
         except Exception as exc:
             self.status.set(str(exc))

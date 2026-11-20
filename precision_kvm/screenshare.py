@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import re
 import socket
+import sys
 import tempfile
 import threading
 import time
@@ -352,6 +353,10 @@ class ScreenShareClient:
         self._udp_offer: int | None = None   # UDP port the server listens on
         self._encoder = None                 # ffmpeg subprocess while streaming
         self._encoder_err = None             # stderr sink for ffmpeg diagnostics
+        self._tcc_asked = False              # requested Screen Recording once
+        self._tcc_denied = False             # last preflight state
+        self._tcc_msg_t = 0.0                # throttled "grant needed" status
+        self._sct = None                     # mss instance for in-process capture
 
     def start(self):
         if self.thread and self.thread.is_alive():
@@ -365,6 +370,12 @@ class ScreenShareClient:
         self.stopped.set()
         video_udp.reap(self._encoder)
         self._encoder = None
+        if self._sct is not None:
+            try:
+                self._sct.close()
+            except Exception:
+                pass
+            self._sct = None
         if self.channel:
             self.channel.close()
         if self.thread and self.thread is not threading.current_thread():
@@ -405,6 +416,87 @@ class ScreenShareClient:
                 self._encoder_err = None
         return self._encoder_err
 
+    def _capture_allowed(self) -> bool:
+        """darwin Screen-Recording preflight in THIS process — the context TCC
+        actually evaluates for a launchd client's children. First denial issues
+        the real prompt so Settings gains the correct identity to toggle."""
+        if sys.platform != "darwin":
+            return True
+        try:
+            import Quartz  # type: ignore
+        except Exception:
+            return True  # can't check — let capture try and fail normally
+        ok = bool(Quartz.CGPreflightScreenCaptureAccess())
+        if ok:
+            if self._tcc_denied:
+                # Grant landed after an encoder was spawned: the parked process
+                # stays denied forever, so force a fresh spawn under the grant.
+                self._tcc_denied = False
+                video_udp.reap(self._encoder)
+                self._encoder = None
+            return True
+        self._tcc_denied = True
+        if not self._tcc_asked:
+            self._tcc_asked = True
+            try:
+                Quartz.CGRequestScreenCaptureAccess()
+            except Exception:
+                pass
+        return False
+
+    def _darwin_udp_stream(self, cfg: dict) -> None:
+        """darwin UDP path — capture in-process and let ffmpeg encode-only.
+
+        mss (CGWindowList) runs under THIS client's granted TCC identity;
+        ffmpeg's own avfoundation capture is denied because modern macOS
+        evaluates Screen Recording per binary, and a launchd-spawned encoder
+        never gets a visible prompt to register its entry.
+        """
+        if self._sct is None:
+            try:
+                import mss
+                self._sct = mss.mss()
+            except Exception as exc:
+                self.status(f"Screen: capture init failed: {exc}")
+                self.stopped.wait(2.0)
+                return
+        mons = self._sct.monitors
+        idx = min(max(1, int(cfg["monitor"]) + 1), len(mons) - 1)
+        mon = mons[idx]
+        ffmpeg = video_udp.ffmpeg_path()
+        if not ffmpeg:
+            self.stopped.wait(2.0)
+            return
+        cmd = video_udp.encoder_command(
+            cfg, self.config["host"], self._udp_offer, ffmpeg,
+            src_size=(mon["width"], mon["height"]))
+        proc = video_udp.launch(cmd, self._encoder_log(), stdin_pipe=True)
+        self._encoder = proc
+        if proc is None or proc.stdin is None:
+            self.status("Screen: hardware encoder failed to start")
+            self.stopped.wait(2.0)
+            return
+        self.status("Screen: streaming H.264 over UDP (in-process capture)")
+        interval = 1.0 / max(1, int(cfg["fps"]))
+        while not self.stopped.is_set() and not self._cfg_new.is_set():
+            started = time.monotonic()
+            try:
+                stdin = proc.stdin
+                assert stdin is not None
+                stdin.write(self._sct.grab(mon).bgra)
+                stdin.flush()
+            except (BrokenPipeError, OSError):
+                break
+            except Exception as exc:
+                self.status(f"Screen: capture failed: {type(exc).__name__}")
+                self.stopped.wait(1.0)
+                continue
+            if proc.poll() is not None:
+                break
+            self._cfg_new.wait(max(0.0, interval - (time.monotonic() - started)))
+        video_udp.reap(proc)
+        self._encoder = None
+
     def _controls(self, channel: FramedSocket):
         """Reader for host→client JSON control messages."""
         try:
@@ -444,6 +536,21 @@ class ScreenShareClient:
                         sct = None
                     self._cfg_new.wait(0.5)
                     self._cfg_new.clear()
+                    continue
+                if not self._capture_allowed():
+                    # A TCC-parked encoder stays "alive" at 0% CPU forever —
+                    # report the real blocker instead of silently spawning.
+                    video_udp.reap(self._encoder)
+                    self._encoder = None
+                    if time.monotonic() - self._tcc_msg_t > 15:
+                        self._tcc_msg_t = time.monotonic()
+                        self.status("Screen: needs Screen Recording permission — "
+                                    "enable this app in System Settings > "
+                                    "Privacy & Security > Screen & System Audio Recording")
+                    self.stopped.wait(2.0)
+                    continue
+                if self._udp_offer and sys.platform == "darwin":
+                    self._darwin_udp_stream(cfg)
                     continue
                 if self._udp_offer and video_udp.can_encode():
                     # HW-encode path — Parsec-style H.264 over UDP; ffmpeg does

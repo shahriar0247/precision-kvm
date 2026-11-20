@@ -12,8 +12,11 @@ import ctypes
 from ctypes import wintypes
 import hashlib
 import io
+import os
+import shutil
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -428,12 +431,157 @@ class MacClipboard:
         pass
 
 
+class LinuxClipboard:
+    """wl-clipboard on Wayland, xclip fallback on X11.
+
+    Wayland/X11 clipboards are owner-served: wl-copy and xclip fork a
+    helper that keeps the data alive for paste requests. Each ownership
+    carries a single MIME type, so a bundle with both text and PNG installs
+    the PNG — the richer payload, and what image copies are usually for.
+    """
+    _TEXT_OFFERS = (TEXT, "text/plain", "UTF8_STRING")
+
+    def __init__(self):
+        if sys.platform != "linux":
+            raise OSError("Linux clipboard requires Linux")
+        have_wl = bool(shutil.which("wl-copy") and shutil.which("wl-paste"))
+        if have_wl and os.environ.get("WAYLAND_DISPLAY"):
+            self._mode = "wayland"
+        elif os.environ.get("DISPLAY") and shutil.which("xclip"):
+            self._mode = "x11"
+        elif have_wl:
+            self._mode = "wayland"
+        else:
+            raise OSError("Clipboard needs wl-clipboard (Wayland) or xclip (X11)")
+        self._rev = 0
+        self._rev_hash: str | None = None
+        self._rev_lock = threading.Lock()
+        self._watch: subprocess.Popen | None = None
+        if self._mode == "wayland":
+            self._spawn_watch()
+
+    def close(self):
+        if self._watch:
+            self._watch.kill()
+            self._watch = None
+
+    def _spawn_watch(self):
+        """`wl-paste --watch` prints once per selection change -> our counter."""
+        try:
+            self._watch = subprocess.Popen(
+                ["wl-paste", "--watch", "echo", "."],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        except OSError:
+            self._watch = None
+            return
+
+        def count(stream):
+            for _line in stream:
+                with self._rev_lock:
+                    self._rev += 1
+
+        threading.Thread(target=count, args=(self._watch.stdout,),
+                         name="kvm-clipboard-watch", daemon=True).start()
+
+    def revision(self):
+        if self._mode == "wayland":
+            if self._watch is None or self._watch.poll() is not None:
+                self._spawn_watch()
+            with self._rev_lock:
+                return self._rev
+        # X11 has no cheap change counter via xclip: hash the offered types,
+        # plus small text content so same-type copies still register. Pure
+        # image-to-image changes can be missed on this fallback only.
+        offers = self._clip_out(["-t", "TARGETS"]) or b""
+        probe = bytearray(offers)
+        if b"text" in offers:
+            probe += self._clip_out(["-t", TEXT], limit=1 << 20) or b""
+        digest = hashlib.sha256(bytes(probe)).hexdigest()
+        with self._rev_lock:
+            if digest != self._rev_hash:
+                self._rev_hash = digest
+                self._rev += 1
+            return self._rev
+
+    def _clip_out(self, args, limit=None):
+        try:
+            if self._mode == "wayland":
+                out = subprocess.run(["wl-paste", *args], capture_output=True,
+                                     timeout=5)
+            else:
+                out = subprocess.run(["xclip", "-o", "-selection", "clipboard", *args],
+                                     capture_output=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if out.returncode != 0:
+            return None
+        data = out.stdout
+        return data if limit is None else data[:limit]
+
+    def read(self, max_bytes):
+        if self._mode == "wayland":
+            offers = (self._clip_out(["-l"]) or b"").split(b"\n")
+            result = {}
+            if PNG.encode() in offers:
+                data = self._clip_out(["-t", PNG])
+                if data:
+                    if len(data) > max_bytes:
+                        raise ValueError("Native clipboard exceeds configured size limit")
+                    result[PNG] = data
+            for offer in self._TEXT_OFFERS:
+                if offer.encode() in offers:
+                    data = self._clip_out(["-n", "-t", offer])
+                    if data:
+                        result[TEXT] = data
+                    break
+            if result:
+                validate_bundle(result, max_bytes)
+            return result or None
+        offers = (self._clip_out(["-t", "TARGETS"]) or b"")
+        result = {}
+        if PNG.encode() in offers:
+            data = self._clip_out(["-t", PNG])
+            if data:
+                if len(data) > max_bytes:
+                    raise ValueError("Native clipboard exceeds configured size limit")
+                result[PNG] = data
+        for offer in self._TEXT_OFFERS:
+            if offer.encode() in offers:
+                data = self._clip_out(["-t", offer])
+                if data:
+                    result[TEXT] = data
+                break
+        if result:
+            validate_bundle(result, max_bytes)
+        return result or None
+
+    def write(self, bundle, max_bytes):
+        validate_bundle(bundle, max_bytes)
+        # Single-type ownership: the image is the payload worth keeping.
+        if PNG in bundle:
+            mime, data = PNG, bundle[PNG]
+        elif TEXT in bundle:
+            mime, data = TEXT, bundle[TEXT]
+        else:
+            return
+        if mime == PNG:
+            verify_png(data, max_bytes)
+        command = (["wl-copy", "-t", mime] if self._mode == "wayland"
+                   else ["xclip", "-i", "-selection", "clipboard", "-t", mime])
+        try:
+            subprocess.run(command, input=data, timeout=5)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise OSError("Linux refused clipboard write") from exc
+
+
 def native_backend():
     if sys.platform == "win32":
         return WindowsClipboard()
     if sys.platform == "darwin":
         return MacClipboard()
-    raise OSError("Clipboard sharing supports Windows and macOS")
+    if sys.platform == "linux":
+        return LinuxClipboard()
+    raise OSError("Clipboard sharing supports Windows, macOS and Linux")
 
 
 class ClipboardBridge:
@@ -468,7 +616,7 @@ class ClipboardBridge:
                 self.last_digest = None
                 if self.note:
                     self.note("Clipboard changed but nothing readable was found "
-                              "(empty copy, files, or blocked access)")
+                              "(empty copy, files, or macOS pasteboard consent)")
                 return None
             digest = bundle_digest(bundle)
             if digest == self.last_digest:

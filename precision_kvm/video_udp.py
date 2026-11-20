@@ -58,11 +58,16 @@ def _capture_args() -> list[str] | None:
     return None
 
 
-def encoder_command(cfg: dict, host: str, port: int, ffmpeg: str) -> list[str]:
+def encoder_command(cfg: dict, host: str, port: int, ffmpeg: str,
+                    src_size: tuple[int, int] | None = None) -> list[str]:
     """Capture → HW H.264/HEVC → MPEG-TS over UDP to host:port.
 
     Low-latency flags follow Parsec's approach: realtime HW encoder priority,
     short GOP, resend_headers so mid-stream joins/losses resync quickly.
+
+    src_size switches the input to raw BGRA frames on stdin — used when the
+    caller captures in-process (darwin per-binary TCC blocks ffmpeg's own
+    avfoundation capture even when the responsible app is granted).
     """
     fps = max(1, int(cfg.get("fps", 30)))
     kbps = max(500, int(cfg.get("kbps", 8000)))
@@ -89,16 +94,21 @@ def encoder_command(cfg: dict, host: str, port: int, ffmpeg: str) -> list[str]:
     elif scale < 1.0:
         filters = [f"scale=iw*{scale:.3g}:ih*{scale:.3g}"]
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "warning"]
-    capture = list(_capture_args() or [])
-    if sys.platform == "darwin":
-        # AVFoundation screen input only offers uyvy422/yuyv422/nv12 —
-        # the default yuv420p makes the demuxer fail to open.
-        cmd += ["-framerate", str(fps), "-capture_cursor",
-                "1" if cfg.get("cursor", True) else "0",
-                "-pixel_format", "nv12"]
+    if src_size is not None:
+        cmd += ["-f", "rawvideo", "-pix_fmt", "bgra",
+                "-video_size", f"{src_size[0]}x{src_size[1]}",
+                "-framerate", str(fps), "-i", "pipe:0"]
     else:
-        cmd += ["-framerate", str(fps)]
-    cmd += capture
+        capture = list(_capture_args() or [])
+        if sys.platform == "darwin":
+            # AVFoundation screen input only offers uyvy422/yuyv422/nv12 —
+            # the default yuv420p makes the demuxer fail to open.
+            cmd += ["-framerate", str(fps), "-capture_cursor",
+                    "1" if cfg.get("cursor", True) else "0",
+                    "-pixel_format", "nv12"]
+        else:
+            cmd += ["-framerate", str(fps)]
+        cmd += capture
     if sys.platform == "darwin":
         vcodec = "hevc_videotoolbox" if codec == "hevc" else "h264_videotoolbox"
         cmd += ["-c:v", vcodec,
@@ -168,11 +178,13 @@ def read_ppm(stream) -> tuple[int, int, bytes] | None:
     return (width, height, data) if len(data) == size else None
 
 
-def launch(command: list[str], stderr_target=None) -> subprocess.Popen | None:
+def launch(command: list[str], stderr_target=None,
+           stdin_pipe: bool = False) -> subprocess.Popen | None:
     try:
         return subprocess.Popen(command, stdout=subprocess.PIPE,
                                 stderr=stderr_target or subprocess.DEVNULL,
-                                stdin=subprocess.DEVNULL)
+                                stdin=(subprocess.PIPE if stdin_pipe
+                                       else subprocess.DEVNULL))
     except OSError:
         return None
 

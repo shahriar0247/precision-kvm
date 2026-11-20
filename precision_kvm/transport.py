@@ -238,7 +238,10 @@ class TLSListener:
         self.sock = socket.socket()
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind((host, port))
-        self.sock.listen(2)
+        # The TLS handshake runs inline in accept() — a stalled peer ties up
+        # the loop for its full timeout. A tiny backlog drops every other
+        # reconnect during link-flap bursts; 16 absorbs them.
+        self.sock.listen(16)
         self.sock.settimeout(1)
 
     def accept(self) -> FramedSocket:
@@ -264,7 +267,7 @@ class PlainListener:
         self.sock = socket.socket()
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind((host, port))
-        self.sock.listen(2)
+        self.sock.listen(16)
         self.sock.settimeout(1)
 
     def accept(self) -> FramedSocket:
