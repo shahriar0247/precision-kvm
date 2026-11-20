@@ -97,7 +97,7 @@ def test_injector_activate_enters_on_far_edge_and_slams(monkeypatch):
 
 def test_injector_move_emits_deltas_and_detects_return(monkeypatch):
     from precision_kvm import linux_inject as inject_module
-    clock = [0.0]
+    clock = [1.0]
     monkeypatch.setattr(inject_module.time, "monotonic", lambda: clock[0])
     injector, device, returned = _injector(monkeypatch)
     _activate(injector, side="left")
@@ -284,7 +284,7 @@ def test_injector_return_requires_sustained_edge_push(monkeypatch):
         def syn(self): pass
         def emit(self, *args): pass
 
-    clock = [0.0]
+    clock = [1.0]
     monkeypatch.setattr(inject_module.time, "monotonic", lambda: clock[0])
     injector = LinuxInjector(on_return=returns.append, device=FakeDevice())
     injector.handle({"type": "activate", "side": "left", "normalized_y": 0.5})

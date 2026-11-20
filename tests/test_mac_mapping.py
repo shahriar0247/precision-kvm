@@ -57,7 +57,7 @@ class MappingTests(unittest.TestCase):
     def test_left_mac_enters_at_right_and_returns(self):
         from unittest.mock import patch
         from precision_kvm import mac as mac_module
-        clock = [0.0]
+        clock = [1.0]
         with patch.object(mac_module.time, "monotonic", lambda: clock[0]):
             self.activate()
             self.assertEqual(self.injector.x,98)
@@ -125,7 +125,7 @@ class MappingTests(unittest.TestCase):
     def test_top_monitor_return(self):
         from unittest.mock import patch
         from precision_kvm import mac as mac_module
-        clock = [0.0]
+        clock = [1.0]
         with patch.object(mac_module.time, "monotonic", lambda: clock[0]):
             self.injector.handle({"type":"activate","side":"top","normalized_x":0.25})
             self.assertEqual((self.injector.x,self.injector.y),(24.75,98))

@@ -32,7 +32,7 @@ _INJECT_KEYS = set(LINUX_KEYS) | set(_BUTTON_CODES.values())
 _INJECT_RELS = {REL_X, REL_Y, REL_WHEEL, REL_HWHEEL,
                 REL_WHEEL_HI_RES, REL_HWHEEL_HI_RES}
 
-RETURN_PUSH = 200  # deltas pushed into the return edge before control returns
+RETURN_PUSH = 150  # deltas pushed into the return edge before control returns
 
 
 class LinuxInjector:
@@ -74,6 +74,7 @@ class LinuxInjector:
         self._press = 0.0            # accumulated push on the return edge
         self._press_t = 0.0
         self._press_first = 0.0      # when the current push burst began
+        self._key_t = 0.0            # last key event — typing suppresses the edge
         self.refresh_bounds()
 
     def refresh_bounds(self):
@@ -166,20 +167,21 @@ class LinuxInjector:
             else:
                 overshoot = self.top - ny
             now = time.monotonic()
-            if overshoot > 0 and not self.buttons:
-                # Sustained-push gate: a palm/brush across the touchpad emits a
-                # few large deltas in <50ms — capping each move's contribution
-                # means a single burst can never reach RETURN_PUSH alone, and
-                # the elapsed window requires continuous outward pressure.
+            if (overshoot > 0 and not self.buttons
+                    and now - self._key_t > 0.25):
+                # Near-native return: ~3 outward moves spanning >=40ms.
+                # A palm-brush is 1-3 deltas in <30ms — the per-move cap and
+                # elapsed gate reject it, and typing suppresses the edge
+                # entirely so brushes while typing can never bounce you.
                 if self._press > 0 and now - self._press_t <= 0.4:
-                    self._press += min(overshoot, 60)
+                    self._press += min(overshoot, 50)
                 else:
-                    self._press, self._press_first = min(overshoot, 60), now
+                    self._press, self._press_first = min(overshoot, 50), now
             else:
                 self._press = 0.0
             self._press_t = now
             if (self._press >= RETURN_PUSH
-                    and now - self._press_first >= 0.12):
+                    and now - self._press_first >= 0.04):
                 self._press = 0.0
                 fraction = ((self.y - self.top) / max(1, self.height - 1)
                             if self.side in ("left", "right")
@@ -244,6 +246,7 @@ class LinuxInjector:
         self.device.syn()
 
     def _key(self, event: dict):
+        self._key_t = time.monotonic()
         code = evdev_for_key(int(event["vk"]), int(event.get("scan", 0)),
                              bool(event.get("extended", False)))
         if code is None:
